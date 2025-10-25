@@ -1,5 +1,3 @@
-use std::f32::consts::PI;
-
 use super::{
     butterflies::{
         butterfly_2, butterfly_3, butterfly_4, butterfly_5, butterfly_7, cooley_tukey_radix2,
@@ -135,6 +133,15 @@ impl<D> RadixFFT<D> {
         }
     }
 
+    /// Compute a twiddle factor with f64 precision, then convert to f32.
+    /// This reduces accumulated floating-point error for large FFTs.
+    #[inline(always)]
+    fn compute_twiddle_f32(index: usize, fft_len: usize) -> Complex32 {
+        let constant = -2.0 * std::f64::consts::PI / fft_len as f64;
+        let angle = constant * index as f64;
+        Complex32::new(angle.cos() as f32, angle.sin() as f32)
+    }
+
     /// Compute twiddle factors for Cooley-Tukey radix-2 FFT.
     fn compute_cooley_turkey_radix2_twiddles(n: usize) -> Vec<Complex32> {
         assert!(n.is_power_of_two() && n > 0);
@@ -147,8 +154,7 @@ impl<D> RadixFFT<D> {
             let fft_size = 1 << (stage + 1);
 
             for k in 0..num_twiddles {
-                let angle = -2.0 * PI * (k as f32) / (fft_size as f32);
-                twiddles.push(Complex32::new(angle.cos(), angle.sin()));
+                twiddles.push(Self::compute_twiddle_f32(k, fft_size));
             }
         }
 
@@ -167,8 +173,8 @@ impl<D> RadixFFT<D> {
         let twiddle_count = Self::twiddle_count(n);
         (1..twiddle_count)
             .map(|k| {
-                let angle = -2.0 * PI * (k as f32) / (n as f32);
-                Complex32::new(angle.cos() * 0.5, angle.sin() * 0.5)
+                let twiddle = Self::compute_twiddle_f32(k, n);
+                Complex32::new(twiddle.re * 0.5, twiddle.im * 0.5)
             })
             .collect()
     }
@@ -181,8 +187,8 @@ impl<D> RadixFFT<D> {
         let twiddle_count = Self::twiddle_count(n);
         (1..twiddle_count)
             .map(|k| {
-                let angle = -2.0 * PI * (k as f32) / (n as f32);
-                Complex32::new(angle.cos(), -angle.sin())
+                let twiddle = Self::compute_twiddle_f32(k, n);
+                Complex32::new(twiddle.re, -twiddle.im)
             })
             .collect()
     }
@@ -210,8 +216,7 @@ impl<D> RadixFFT<D> {
         // Step 2: Compute twiddles for Six-Step multiplication: W_N^(x*y).
         for x in 0..width {
             for y in 0..height {
-                let angle = -2.0 * PI * (x * y) as f32 / n as f32;
-                twiddles.push(Complex32::new(angle.cos(), angle.sin()));
+                twiddles.push(Self::compute_twiddle_f32(x * y, n));
             }
         }
 
@@ -222,18 +227,26 @@ impl<D> RadixFFT<D> {
     }
 
     /// Returns the required scratchpad size for FFT processing.
-    ///
-    /// The scratchpad is used for intermediate calculations during the FFT,
-    /// including transpose operations and recursive FFT stages.
-    /// Callers must allocate a buffer of at least this size.
+    /// Optimized to return minimal space for in-place algorithms.
     pub fn scratchpad_size(&self) -> usize {
-        if self.factors.is_empty() || self.factors.len() == 1 || self.is_pure_radix2 {
-            // Need space for intermediate complex representation in process_forward/inverse_internal.
-            self.len
-        } else {
-            // N/2 FFT uses Six-Step algorithm, which needs scratch buffers for transpositions.
-            self.len * 4
+        if self.factors.is_empty() {
+            // N/2 = 1, no FFT needed.
+            return self.len; // main buffer
         }
+
+        if self.factors.len() == 1 {
+            // Single factor butterfly is in-place.
+            return self.len; // main buffer
+        }
+
+        if self.is_pure_radix2 {
+            // Cooley-Tukey is in-place.
+            return self.len; // main buffer
+        }
+
+        // Six-Step algorithm needs transpose buffers plus space for recursive calls.
+        // Main buffer (N) + 2 transpose buffers (N each) = 3N is sufficient.
+        self.len * 3
     }
 
     /// Split factors into two groups for Six-Step decomposition.
@@ -472,18 +485,30 @@ impl<D> RadixFFT<D> {
         let (fft_scratch, temp_scratch) = scratchpad.split_at_mut(n);
 
         // Reinterpret N real values as N/2 complex values by pairing consecutive samples.
-        for i in 0..n2 {
-            let re = if 2 * i < input.len() {
-                input[2 * i]
-            } else {
-                0.0
+        if input.len() >= n {
+            let buf_in = unsafe {
+                let ptr = input.as_ptr() as *const Complex32;
+                std::slice::from_raw_parts(ptr, n2)
             };
-            let im = if 2 * i + 1 < input.len() {
-                input[2 * i + 1]
-            } else {
-                0.0
-            };
-            fft_scratch[i] = Complex32::new(re, im);
+            fft_scratch[..n2].copy_from_slice(buf_in);
+        } else {
+            let available_pairs = input.len() / 2;
+            if available_pairs > 0 {
+                unsafe {
+                    let ptr = input.as_ptr() as *const Complex32;
+                    let buf_in = std::slice::from_raw_parts(ptr, available_pairs);
+                    fft_scratch[..available_pairs].copy_from_slice(buf_in);
+                }
+            }
+
+            if input.len() % 2 == 1 {
+                fft_scratch[available_pairs] = Complex32::new(input[input.len() - 1], 0.0);
+            }
+
+            // Zero-pad the rest.
+            for i in (available_pairs + (input.len() % 2))..n2 {
+                fft_scratch[i] = Complex32::new(0.0, 0.0);
+            }
         }
 
         self.process_forward_complex(&mut fft_scratch[..n2], temp_scratch);
@@ -516,12 +541,20 @@ impl<D> RadixFFT<D> {
         self.preprocess_ifft(&mut fft_scratch[..n2 + 1]);
         self.process_inverse_complex(&mut fft_scratch[..n2], temp_scratch);
 
-        for i in 0..n2 {
-            if 2 * i < output.len() {
-                output[2 * i] = fft_scratch[i].re;
-            }
-            if 2 * i + 1 < output.len() {
-                output[2 * i + 1] = fft_scratch[i].im;
+        if output.len() >= n {
+            let buf_out = unsafe {
+                let ptr = output.as_mut_ptr() as *mut Complex32;
+                std::slice::from_raw_parts_mut(ptr, n2)
+            };
+            buf_out.copy_from_slice(&fft_scratch[..n2]);
+        } else {
+            for i in 0..n2 {
+                if 2 * i < output.len() {
+                    output[2 * i] = fft_scratch[i].re;
+                }
+                if 2 * i + 1 < output.len() {
+                    output[2 * i + 1] = fft_scratch[i].im;
+                }
             }
         }
 
@@ -663,6 +696,8 @@ impl RadixFFT<Inverse> {
 
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::PI;
+
     use super::*;
 
     const EPSILON: f32 = 1e-4;
@@ -1449,5 +1484,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_complex32_layout() {
+        assert_eq!(
+            size_of::<Complex32>(),
+            2 * size_of::<f32>(),
+            "Complex32 must be exactly 2 f32s in size"
+        );
+
+        assert_eq!(
+            align_of::<Complex32>(),
+            align_of::<f32>(),
+            "Complex32 alignment must match f32"
+        );
+
+        // Verify that casting is safe.
+        let reals = [1.0f32, 2.0, 3.0, 4.0];
+        let complex = unsafe { std::slice::from_raw_parts(reals.as_ptr() as *const Complex32, 2) };
+
+        assert_eq!(complex[0].re, 1.0);
+        assert_eq!(complex[0].im, 2.0);
+        assert_eq!(complex[1].re, 3.0);
+        assert_eq!(complex[1].im, 4.0);
     }
 }
