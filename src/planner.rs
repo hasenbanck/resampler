@@ -361,19 +361,18 @@ mod tests {
             ]
         );
 
-        // ThroughputOptimized: target ~1024 samples -> 64x multiplier
+        // ThroughputOptimized: target ~512 samples -> 32x multiplier
         let (input, factors_in, output, factors_out) =
             config.scale_for_latency(LatencyMode::ThroughputOptimized);
-        assert_eq!(input, 1024);
-        assert_eq!(output, 2240);
+        assert_eq!(input, 512);
+        assert_eq!(output, 1120);
 
-        // 1024 = 64 × 16, multiplier is 64 = 2^6
+        // 512 = 32 × 16, multiplier is 32 = 2^5
 
-        // Base is power-of-2 (16), so use only Factor2: [Factor2; 6] + [Factor2; 4]
+        // Base is power-of-2 (16), so use only Factor2: [Factor2; 4] + [Factor2; 5]
         assert_eq!(
             factors_in,
             vec![
-                Radix::Factor2,
                 Radix::Factor2,
                 Radix::Factor2,
                 Radix::Factor2,
@@ -386,8 +385,8 @@ mod tests {
             ]
         );
 
-        // Output is not power-of-2, so use Factor4: 64 = 4×4×4
-        // Base [Factor7, Factor5] + multiplier [Factor4, Factor4, Factor4] = [Factor7, Factor5, Factor4, Factor4, Factor4]
+        // Output is not power-of-2, so use Factor4: 32 = 4×4×2
+        // Base [Factor7, Factor5] + multiplier [Factor4, Factor4, Factor2] = [Factor7, Factor5, Factor4, Factor4, Factor2]
         assert_eq!(
             factors_out,
             vec![
@@ -395,7 +394,7 @@ mod tests {
                 Radix::Factor5,
                 Radix::Factor4,
                 Radix::Factor4,
-                Radix::Factor4
+                Radix::Factor2
             ]
         );
     }

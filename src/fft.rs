@@ -7,6 +7,7 @@ pub use transpose::transpose;
 
 /// Simple complex number struct
 #[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
 pub struct Complex32 {
     pub re: f32,
     pub im: f32,
