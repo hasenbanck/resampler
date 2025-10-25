@@ -12,11 +12,11 @@ criterion = { version = "0.7", features = ["html_reports"] }
 rand_aes = "0.5"
 
 [[bench]]
-name = "fft_benchmark"
+name = "benchmark_fft"
 harness = false
 
 [[bench]]
-name = "transpose_benchmark"
+name = "benchmark_transpose"
 harness = false
 
 [lib]

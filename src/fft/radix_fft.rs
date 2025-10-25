@@ -1,10 +1,8 @@
 use super::{
-    butterflies::{
-        butterfly_2, butterfly_3, butterfly_4, butterfly_5, butterfly_7, cooley_tukey_radix2,
-    },
+    butterflies::{butterfly_3, butterfly_4, butterfly_5, butterfly_7, cooley_tukey_radix2},
     transpose::transpose,
 };
-use crate::Complex32;
+use crate::{Complex32, fft::butterflies::butterfly_2};
 
 /// Radix factors supported for mixed-radix FFT decomposition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
