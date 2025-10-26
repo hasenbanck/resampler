@@ -246,9 +246,9 @@ impl FftResampler {
                 let cutoff = match fft_size_input > fft_size_output {
                     true => {
                         let scale = fft_size_output as f64 / fft_size_input as f64;
-                        calculate_cutoff_kaiser(fft_size_output) * scale
+                        calculate_cutoff_kaiser(fft_size_output, KAISER_BETA) * scale
                     }
-                    false => calculate_cutoff_kaiser(fft_size_input),
+                    false => calculate_cutoff_kaiser(fft_size_input, KAISER_BETA),
                 };
 
                 // TODO: Make the Kaiser's beta configurable. For this we need to make the cutoff calculatable.
@@ -277,6 +277,8 @@ impl FftResampler {
     }
 
     fn resample(&mut self, wave_input: &[f32], wave_output: &mut [f32], overlap: &mut [f32]) {
+        // TODO The frequency graph shows that we seem to change the volume on some ratios.
+
         // Apply input window for proper overlap-add reconstruction.
         for (index, (input_sample, window_value)) in
             wave_input.iter().zip(self.input_window.iter()).enumerate()

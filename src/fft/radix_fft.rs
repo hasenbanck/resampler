@@ -647,7 +647,7 @@ mod tests {
 
     use super::*;
 
-    const EPSILON: f32 = 1e-4;
+    const EPSILON: f32 = 1.0e-5;
 
     /// Single-stage radix factors to test (only even lengths for N/2 optimization).
     const SINGLE_STAGE_FACTORS: &[Radix] = &[Radix::Factor2, Radix::Factor4];

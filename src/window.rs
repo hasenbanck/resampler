@@ -66,7 +66,7 @@ fn bessel_i0(x: f64) -> f64 {
     for idx in 1..1500 {
         term = term * base / (idx * idx) as f64;
         let previous = result;
-        result = result + term;
+        result += term;
         if result == previous {
             break;
         }
@@ -75,16 +75,23 @@ fn bessel_i0(x: f64) -> f64 {
     result
 }
 
-pub(crate) fn calculate_cutoff_kaiser(sample_count: usize) -> f64 {
-    let k1 = 6.455836318286847;
-    let k2 = 39.20747326791276;
-    let k3 = 437.0957794994604;
-    let one = 1.0;
-    let npoints_t = sample_count as f64;
-    one / (k1 / npoints_t
-        + k2 / (npoints_t * npoints_t)
-        + k3 / (npoints_t * npoints_t * npoints_t)
-        + one)
+pub(crate) fn calculate_cutoff_kaiser(sample_count: usize, beta: f64) -> f64 {
+    let n = sample_count as f64;
+
+    // Kaiser window transition bandwidth (from theory).
+    // beta → stopband attenuation → transition width
+    let a_db = beta / 0.1102 + 8.7; // Stopband attenuation (dB)
+    let delta_f_nyquist = (a_db - 7.95) / (14.36 * n); // Transition width
+
+    // Add small safety margin: widen transition band by ~0.5%
+    // This provides headroom for numerical imperfections.
+    const SAFETY_MARGIN: f64 = 1.005;
+
+    // Cutoff: 1.0 (full sample rate) minus transition width.
+    // This places the transition band edge just below Nyquist.
+    let cutoff = 1.0 - (delta_f_nyquist * SAFETY_MARGIN);
+
+    cutoff.clamp(0.7, 1.0)
 }
 
 #[cfg(test)]
@@ -186,18 +193,18 @@ mod tests {
 
     #[test]
     fn test_calculate_cutoff_kaiser_various_sizes() {
-        assert_approx_f64(calculate_cutoff_kaiser(64), 0.899190035855179);
-        assert_approx_f64(calculate_cutoff_kaiser(128), 0.949633636041150);
-        assert_approx_f64(calculate_cutoff_kaiser(256), 0.974808585057528);
-        assert_approx_f64(calculate_cutoff_kaiser(512), 0.987398936647569);
-        assert_approx_f64(calculate_cutoff_kaiser(1024), 0.993697645692892);
+        assert_approx_f64(calculate_cutoff_kaiser(64, 10.0), 0.8999482371370552);
+        assert_approx_f64(calculate_cutoff_kaiser(128, 10.0), 0.9499741185685276);
+        assert_approx_f64(calculate_cutoff_kaiser(256, 10.0), 0.9749870592842638);
+        assert_approx_f64(calculate_cutoff_kaiser(512, 10.0), 0.9874935296421319);
+        assert_approx_f64(calculate_cutoff_kaiser(1024, 10.0), 0.9937467648210659);
     }
 
     #[test]
     fn test_calculate_cutoff_kaiser_valid_range() {
         let test_sizes = vec![32, 64, 128, 256, 512, 1024, 2048];
         for size in test_sizes {
-            let cutoff = calculate_cutoff_kaiser(size);
+            let cutoff = calculate_cutoff_kaiser(size, 10.0);
             assert!(cutoff > 0.0, "Cutoff should be > 0, got {cutoff}");
             assert!(cutoff < 1.0, "Cutoff should be < 1, got {cutoff}");
         }
