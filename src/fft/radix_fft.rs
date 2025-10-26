@@ -269,7 +269,6 @@ impl<D> RadixFFT<D> {
     /// The Cooley-Tukey algorithm (both pure radix-2 and mixed radix) is in-place,
     /// so we only need the main buffer of size N.
     pub fn scratchpad_size(&self) -> usize {
-        // All algorithms are now in-place, so we only need the main buffer.
         self.n
     }
 
@@ -712,10 +711,28 @@ mod tests {
             (vec![Radix::Factor2, Radix::Factor3], "2x3"),
             (vec![Radix::Factor3, Radix::Factor2], "3x2"),
             (vec![Radix::Factor2, Radix::Factor5], "2x5"),
-            (vec![Radix::Factor2, Radix::Factor3, Radix::Factor5], "2x3x5"),
-            (vec![Radix::Factor5, Radix::Factor3, Radix::Factor2], "5x3x2"),
-            (vec![Radix::Factor2, Radix::Factor5, Radix::Factor7], "2x5x7"),
-            (vec![Radix::Factor2, Radix::Factor2, Radix::Factor2, Radix::Factor5, Radix::Factor7], "2x2x2x5x7"),
+            (
+                vec![Radix::Factor2, Radix::Factor3, Radix::Factor5],
+                "2x3x5",
+            ),
+            (
+                vec![Radix::Factor5, Radix::Factor3, Radix::Factor2],
+                "5x3x2",
+            ),
+            (
+                vec![Radix::Factor2, Radix::Factor5, Radix::Factor7],
+                "2x5x7",
+            ),
+            (
+                vec![
+                    Radix::Factor2,
+                    Radix::Factor2,
+                    Radix::Factor2,
+                    Radix::Factor5,
+                    Radix::Factor7,
+                ],
+                "2x2x2x5x7",
+            ),
         ];
 
         for (radices, name) in test_cases {
@@ -750,37 +767,23 @@ mod tests {
                 assert!(
                     !seen[perm_idx],
                     "{}: permutation has duplicate index {}",
-                    name,
-                    perm_idx
+                    name, perm_idx
                 );
                 seen[perm_idx] = true;
             }
 
             // Spot check: index 0 should map to 0 (all digits are 0)
-            assert_eq!(
-                permutation[0], 0,
-                "{}: permutation[0] should be 0",
-                name
-            );
+            assert_eq!(permutation[0], 0, "{}: permutation[0] should be 0", name);
 
             // Spot check for 2x3 case: verify a few known mappings
             if radices == vec![Radix::Factor2, Radix::Factor3] {
                 // n = 6, radices [2,3]
                 // Index 1: digits = [1, 0], reversed reconstruction = 0*1 + 1*3 = 3
-                assert_eq!(
-                    permutation[1], 3,
-                    "2x3: permutation[1] should be 3"
-                );
+                assert_eq!(permutation[1], 3, "2x3: permutation[1] should be 3");
                 // Index 2: digits = [0, 1], reversed reconstruction = 1*1 + 0*3 = 1
-                assert_eq!(
-                    permutation[2], 1,
-                    "2x3: permutation[2] should be 1"
-                );
+                assert_eq!(permutation[2], 1, "2x3: permutation[2] should be 1");
                 // Index 4: digits = [0, 2], reversed reconstruction = 2*1 + 0*3 = 2
-                assert_eq!(
-                    permutation[4], 2,
-                    "2x3: permutation[4] should be 2"
-                );
+                assert_eq!(permutation[4], 2, "2x3: permutation[4] should be 2");
             }
         }
     }
