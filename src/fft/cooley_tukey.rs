@@ -1,5 +1,4 @@
-use super::butterfly_2;
-use crate::{Complex32, Radix};
+use crate::{Complex32, Radix, fft::butterflies::butterfly_2};
 
 /// Reverses the bits of an integer value.
 #[inline]

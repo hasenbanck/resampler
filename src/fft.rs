@@ -1,4 +1,5 @@
 mod butterflies;
+pub(crate) mod cooley_tukey;
 mod radix_fft;
 mod transpose;
 

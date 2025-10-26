@@ -320,8 +320,6 @@ impl<D> RadixFFT<D> {
 
         let n = data.len();
 
-        // TODO: Look into Complex32 struct if we can optimize it
-
         // Split scratch into two transpose buffers + remaining for recursive FFTs.
         let (scratch_pair, remaining) = scratch.split_at_mut(n * 2);
         let (scratch1, scratch2) = scratch_pair.split_at_mut(n);
