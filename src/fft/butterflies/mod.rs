@@ -59,45 +59,40 @@ mod test_helpers {
     /// # Arguments
     /// * `scalar_fn` - Reference scalar implementation
     /// * `simd_fn` - SIMD implementation to test (wrapped in closure for unsafe calls)
+    /// * `radix` - The radix of the butterfly (2 for radix-2, 3 for radix-3, etc.)
+    /// * `twiddles_per_column` - Number of twiddle factors per column
     /// * `test_name` - Name for error messages
     pub fn test_butterfly_against_scalar<F, G>(
         scalar_fn: F,
         simd_fn: G,
+        radix: usize,
+        twiddles_per_column: usize,
         test_name: &str,
     ) where
         F: Fn(&mut [Complex32], &[Complex32], usize),
         G: Fn(&mut [Complex32], &[Complex32], usize),
     {
-        // Test various column counts including non-SIMD-aligned sizes
         let test_sizes = vec![1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33];
 
         for num_columns in test_sizes {
-            // Create test data: 2*num_columns elements (radix-2 butterfly layout)
-            let mut scalar_data = vec![Complex32::zero(); 2 * num_columns];
-            let mut simd_data = vec![Complex32::zero(); 2 * num_columns];
+            let mut scalar_data = vec![Complex32::zero(); radix * num_columns];
+            let mut simd_data = vec![Complex32::zero(); radix * num_columns];
 
-            // Initialize with some test values
             for i in 0..scalar_data.len() {
-                let val = Complex32::new(
-                    (i as f32 * 0.5).sin(),
-                    (i as f32 * 0.3).cos(),
-                );
+                let val = Complex32::new((i as f32 * 0.5).sin(), (i as f32 * 0.3).cos());
                 scalar_data[i] = val;
                 simd_data[i] = val;
             }
 
-            // Initialize twiddle factors with varied values
-            let mut twiddles = vec![Complex32::zero(); num_columns];
-            for i in 0..num_columns {
+            let mut twiddles = vec![Complex32::zero(); num_columns * twiddles_per_column];
+            for i in 0..twiddles.len() {
                 let angle = 2.0 * std::f32::consts::PI * (i as f32) / (num_columns as f32);
                 twiddles[i] = Complex32::new(angle.cos(), angle.sin());
             }
 
-            // Run both implementations
             scalar_fn(&mut scalar_data, &twiddles, num_columns);
             simd_fn(&mut simd_data, &twiddles, num_columns);
 
-            // Compare results
             let context = format!("{} with {} columns", test_name, num_columns);
             assert_complex_arrays_approx_eq(&simd_data, &scalar_data, 1e-6, &context);
         }

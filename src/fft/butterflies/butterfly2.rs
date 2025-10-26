@@ -340,6 +340,8 @@ mod tests {
             |data, twiddles, num_columns| unsafe {
                 butterfly_2_sse(data, twiddles, num_columns);
             },
+            2,
+            1,
             "butterfly_2_sse",
         );
     }
@@ -352,6 +354,8 @@ mod tests {
             |data, twiddles, num_columns| unsafe {
                 butterfly_2_sse3(data, twiddles, num_columns);
             },
+            2,
+            1,
             "butterfly_2_sse3",
         );
     }
@@ -364,6 +368,8 @@ mod tests {
             |data, twiddles, num_columns| unsafe {
                 butterfly_2_avx(data, twiddles, num_columns);
             },
+            2,
+            1,
             "butterfly_2_avx",
         );
     }
@@ -376,6 +382,8 @@ mod tests {
             |data, twiddles, num_columns| unsafe {
                 butterfly_2_avx_fma(data, twiddles, num_columns);
             },
+            2,
+            1,
             "butterfly_2_avx_fma",
         );
     }
