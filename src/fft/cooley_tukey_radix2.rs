@@ -24,7 +24,7 @@ fn bit_reverse_radix2(data: &mut [Complex32], log2n: usize) {
 }
 
 /// Performs an in-place pure radix-2 FFT using the Cooley-Tukey DIT algorithm.
-pub(crate) fn cooley_tukey_radix2(
+pub(crate) fn cooley_tukey_radix_2(
     data: &mut [Complex32],
     twiddles: &[Complex32],
     factors: &[Radix],

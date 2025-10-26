@@ -15,9 +15,5 @@ rand_aes = "0.5"
 name = "benchmark_fft"
 harness = false
 
-[[bench]]
-name = "benchmark_transpose"
-harness = false
-
 [lib]
 bench = false

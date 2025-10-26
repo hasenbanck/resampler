@@ -1,6 +1,5 @@
-use super::{
-    butterflies::{butterfly_3, butterfly_4, butterfly_5, butterfly_7, cooley_tukey_radix2},
-    transpose::transpose,
+use super::butterflies::{
+    butterfly_3, butterfly_4, butterfly_5, butterfly_7, cooley_tukey_radix_2, cooley_tukey_radix_n,
 };
 use crate::{Complex32, fft::butterflies::butterfly_2};
 
@@ -53,9 +52,11 @@ pub struct Inverse;
 /// Multiple normalization steps can be merged: when doing forward+inverse FFTs,
 /// normalize once by dividing by `len()` instead of normalizing each transform separately.
 pub struct RadixFFT<D> {
-    len: usize,
+    n: usize,
+    n2: usize,
     factors: Vec<Radix>,
     twiddles: Vec<Complex32>,
+    digit_reversal_permutation: Vec<usize>,
     real_complex_expansion_twiddles: Vec<Complex32>,
     complex_real_reduction_twiddles: Vec<Complex32>,
     is_pure_radix2: bool,
@@ -73,40 +74,83 @@ impl<D> RadixFFT<D> {
     pub fn new(factors: Vec<Radix>) -> Self {
         assert!(!factors.is_empty(), "Factors vector must not be empty");
 
-        let len = factors.iter().map(|f| f.radix()).product();
+        let n = factors.iter().map(|f| f.radix()).product();
         assert_eq!(
-            len % 2,
+            n % 2,
             0,
-            "FFT length must be even for N/2 optimization, got {len}"
+            "FFT length must be even for N/2 optimization, got {n}"
         );
-
-        let is_pure_radix2 = factors.len() > 1 && factors.iter().all(|f| *f == Radix::Factor2);
+        let n2 = n / 2;
 
         let factors = Self::compute_factors(&factors);
+
+        // Check if we have pure radix-2 after expansion (for optimization)
+        let is_pure_radix2 = factors.len() > 1 && factors.iter().all(|f| *f == Radix::Factor2);
 
         let twiddles = if factors.is_empty() || factors.len() == 1 {
             // N/2 = 1 or N/2 is a single radix: no twiddles needed.
             Vec::new()
         } else if is_pure_radix2 {
-            Self::compute_cooley_turkey_radix2_twiddles(len / 2)
+            Self::compute_cooley_tukey_radix_2_twiddles(n2)
         } else {
-            let mut twiddles = Vec::new();
-            Self::compute_six_stages_twiddles_recursive(&factors, &mut twiddles);
-            twiddles
+            Self::compute_cooley_tukey_radix_n_twiddles(n2, &factors)
         };
 
-        let real_complex_expansion_twiddles = Self::compute_real_complex_expansion_twiddles(len);
-        let complex_real_reduction_twiddles = Self::compute_complex_real_reduction_twiddles(len);
+        let digit_reversal_permutation = if is_pure_radix2 || factors.is_empty() {
+            // N/2 = 1, no permutation needed
+            Vec::new()
+        } else {
+            // Compute permutation for N/2 data using N/2 factors
+            Self::compute_digit_reversal_permutation(n2, &factors)
+        };
+
+        let real_complex_expansion_twiddles = Self::compute_real_complex_expansion_twiddles(n);
+        let complex_real_reduction_twiddles = Self::compute_complex_real_reduction_twiddles(n);
 
         Self {
-            len,
+            n,
+            n2,
             factors,
             twiddles,
+            digit_reversal_permutation,
             real_complex_expansion_twiddles,
             complex_real_reduction_twiddles,
             is_pure_radix2,
             _direction: std::marker::PhantomData,
         }
+    }
+
+    /// Compute mixed-radix digit reversal permutation.
+    fn digit_reverse_index(index: usize, radices: &[Radix]) -> usize {
+        let mut digits = Vec::with_capacity(radices.len());
+        let mut temp = index;
+
+        // Step 1: Extract digits in forward order.
+        for radix in radices.iter() {
+            digits.push(temp % radix.radix());
+            temp /= radix.radix();
+        }
+
+        // Step 2: Reconstruct index with reversed digits using reversed radices.
+        let mut result = 0;
+        let mut multiplier = 1;
+
+        for i in (0..radices.len()).rev() {
+            result += digits[i] * multiplier;
+            // Use reversed radix for next multiplier.
+            if i > 0 {
+                multiplier *= radices[i].radix();
+            }
+        }
+
+        result
+    }
+
+    /// Pre-compute the full digit reversal permutation
+    fn compute_digit_reversal_permutation(n: usize, radices: &[Radix]) -> Vec<usize> {
+        (0..n)
+            .map(|i| Self::digit_reverse_index(i, radices))
+            .collect()
     }
 
     /// Compute N/2 factors by removing one Factor2 or converting Factor4 to Factor2.
@@ -141,8 +185,8 @@ impl<D> RadixFFT<D> {
     }
 
     /// Compute twiddle factors for Cooley-Tukey radix-2 FFT.
-    fn compute_cooley_turkey_radix2_twiddles(n: usize) -> Vec<Complex32> {
-        assert!(n.is_power_of_two() && n > 0);
+    fn compute_cooley_tukey_radix_2_twiddles(n: usize) -> Vec<Complex32> {
+        debug_assert!(n.is_power_of_two() && n > 0);
 
         let log2n = n.trailing_zeros() as usize;
         let mut twiddles = Vec::with_capacity(n - 1);
@@ -153,6 +197,35 @@ impl<D> RadixFFT<D> {
 
             for k in 0..num_twiddles {
                 twiddles.push(Self::compute_twiddle_f32(k, fft_size));
+            }
+        }
+
+        twiddles
+    }
+
+    /// Compute twiddle factors for Cooley-Tukey mixed-radix FFT.
+    ///
+    /// This function computes twiddles stage-by-stage in the order they'll be accessed,
+    /// enabling efficient sequential memory access during the FFT computation.
+    ///
+    /// For each stage s with radix r_s:
+    /// - stage_size = product of radices from stage 0 to s (inclusive)
+    /// - num_columns = stage_size / r_s (the butterfly width)
+    /// - For each column c, we compute (r_s - 1) twiddles: W_N^(c * k) for k = 1..(r_s)
+    fn compute_cooley_tukey_radix_n_twiddles(_n: usize, factors: &[Radix]) -> Vec<Complex32> {
+        let mut twiddles = Vec::new();
+        let mut stage_size = 1;
+
+        for &radix in factors {
+            let r = radix.radix();
+            stage_size *= r;
+            let num_columns = stage_size / r;
+
+            // For each column, compute (r-1) twiddles
+            for col in 0..num_columns {
+                for k in 1..r {
+                    twiddles.push(Self::compute_twiddle_f32(col * k, stage_size));
+                }
             }
         }
 
@@ -191,78 +264,19 @@ impl<D> RadixFFT<D> {
             .collect()
     }
 
-    /// Recursively pre-compute twiddle factors in access order.
-    ///
-    /// Traverses the decomposition tree in the same order as perform_fft_on_slice,
-    /// generating twiddles for the Six-Step algorithm at each multi-factor stage.
-    fn compute_six_stages_twiddles_recursive(factors: &[Radix], twiddles: &mut Vec<Complex32>) {
-        // Base case: single factor needs no additional twiddles (uses identity twiddles).
-        if factors.len() == 1 {
-            return;
-        }
-
-        let (width_factors, height_factors) = Self::split_factors(factors);
-        let width: usize = width_factors.iter().map(|f| f.radix()).product();
-        let height: usize = height_factors.iter().map(|f| f.radix()).product();
-        let n = width * height;
-
-        // Step 1: Recursively compute twiddles for height-sized FFTs.
-        for _ in 0..width {
-            Self::compute_six_stages_twiddles_recursive(height_factors, twiddles);
-        }
-
-        // Step 2: Compute twiddles for Six-Step multiplication: W_N^(x*y).
-        for x in 0..width {
-            for y in 0..height {
-                twiddles.push(Self::compute_twiddle_f32(x * y, n));
-            }
-        }
-
-        // Step 3: Recursively compute twiddles for width-sized FFTs.
-        for _ in 0..height {
-            Self::compute_six_stages_twiddles_recursive(width_factors, twiddles);
-        }
-    }
-
     /// Returns the required scratchpad size for FFT processing.
-    /// Optimized to return minimal space for in-place algorithms.
+    ///
+    /// The Cooley-Tukey algorithm (both pure radix-2 and mixed radix) is in-place,
+    /// so we only need the main buffer of size N.
     pub fn scratchpad_size(&self) -> usize {
-        if self.factors.is_empty() {
-            // N/2 = 1, no FFT needed.
-            return self.len; // main buffer
-        }
-
-        if self.factors.len() == 1 {
-            // Single factor butterfly is in-place.
-            return self.len; // main buffer
-        }
-
-        if self.is_pure_radix2 {
-            // Cooley-Tukey is in-place.
-            return self.len; // main buffer
-        }
-
-        // Six-Step algorithm needs transpose buffers plus space for recursive calls.
-        // Main buffer (N) + 2 transpose buffers (N each) = 3N is sufficient.
-        self.len * 3
+        // All algorithms are now in-place, so we only need the main buffer.
+        self.n
     }
 
-    /// Split factors into two groups for Six-Step decomposition.
-    /// For simplicity, split roughly in half.
-    fn split_factors(factors: &[Radix]) -> (&[Radix], &[Radix]) {
-        let mid = factors.len() / 2;
-        if mid == 0 {
-            (&factors[0..1], &factors[1..])
-        } else {
-            factors.split_at(mid)
-        }
-    }
-
-    /// Apply butterfly operation using external butterfly functions.
-    /// For single-element FFTs, twiddles are all 1 (identity).
+    /// For single-element FFTs, twiddles are all the identity value.
     fn apply_single_butterfly(data: &mut [Complex32], factor: Radix) {
         let radix = factor.radix();
-        assert_eq!(data.len(), radix);
+        debug_assert_eq!(data.len(), radix);
 
         match factor {
             Radix::Factor2 => {
@@ -304,68 +318,15 @@ impl<D> RadixFFT<D> {
         }
     }
 
-    /// Perform FFT on a slice using the given factors and pre-computed twiddles.
-    fn perform_fft_on_slice(
-        data: &mut [Complex32],
-        factors: &[Radix],
-        scratch: &mut [Complex32],
-        twiddles: &[Complex32],
-        twiddle_idx: &mut usize,
-    ) {
-        // Base case: single factor, apply butterfly directly.
-        if factors.len() == 1 {
-            Self::apply_single_butterfly(data, factors[0]);
-            return;
-        }
-
-        let n = data.len();
-
-        // Split scratch into two transpose buffers + remaining for recursive FFTs.
-        let (scratch_pair, remaining) = scratch.split_at_mut(n * 2);
-        let (scratch1, scratch2) = scratch_pair.split_at_mut(n);
-
-        // Multi-factor case: use Six-Step algorithm.
-        let (width_factors, height_factors) = Self::split_factors(factors);
-        let width: usize = width_factors.iter().map(|f| f.radix()).product();
-        let height: usize = height_factors.iter().map(|f| f.radix()).product();
-
-        // Step 1: Transpose width×height → height×width (data → scratch1)
-        transpose(data, scratch1, width, height);
-
-        // Step 2: Perform height-sized FFTs on each of `width` rows (on scratch1)
-        for row in 0..width {
-            let row_start = row * height;
-            let row_data = &mut scratch1[row_start..row_start + height];
-            Self::perform_fft_on_slice(row_data, height_factors, remaining, twiddles, twiddle_idx);
-        }
-
-        // Step 3: Apply pre-computed twiddle factors W_N^(x*y) (on scratch1)
-        let num_twiddles = n;
-        let stage_twiddles = &twiddles[*twiddle_idx..*twiddle_idx + num_twiddles];
-        *twiddle_idx += num_twiddles;
-
-        for (idx, &twiddle) in stage_twiddles.iter().enumerate() {
-            scratch1[idx] = scratch1[idx].mul(&twiddle);
-        }
-
-        // Step 4: Transpose height×width → width×height (scratch1 → scratch2)
-        transpose(scratch1, scratch2, height, width);
-
-        // Step 5: Perform width-sized FFTs on each of `height` rows (on scratch2)
-        for row in 0..height {
-            let row_start = row * width;
-            let row_data = &mut scratch2[row_start..row_start + width];
-            Self::perform_fft_on_slice(row_data, width_factors, remaining, twiddles, twiddle_idx);
-        }
-
-        // Step 6: Final transpose width×height → height×width (scratch2 → data)
-        transpose(scratch2, data, width, height);
-    }
-
     /// Perform N/2-point complex FFT for the N/2 optimization.
-    fn process_forward_complex(&self, data: &mut [Complex32], scratch: &mut [Complex32]) {
-        let n2 = self.len / 2;
-        assert_eq!(data.len(), n2);
+    ///
+    /// # Arguments
+    /// * `scratchpad` - Scratch buffer where first n2 elements contain the FFT data,
+    ///                  and remaining elements can be used for temporary storage
+    fn process_forward_complex(&self, scratchpad: &mut [Complex32]) {
+        debug_assert!(scratchpad.len() >= self.n);
+
+        let (data, scratch_remainder) = scratchpad.split_at_mut(self.n2);
 
         // Use pre-computed N/2 factors
         if self.factors.is_empty() {
@@ -375,32 +336,29 @@ impl<D> RadixFFT<D> {
             // Single factor
             Self::apply_single_butterfly(data, self.factors[0]);
         } else if self.is_pure_radix2 {
-            // Pure radix-2: use Cooley-Tukey algorithm
-            cooley_tukey_radix2(data, &self.twiddles, &self.factors);
+            // Pure radix-2: use the optimized Cooley-Tukey algorithm.
+            cooley_tukey_radix_2(data, &self.twiddles, &self.factors);
         } else {
-            // Multi-factor: use Six-Step algorithm with pre-computed twiddles
-            let mut twiddle_idx = 0;
-            Self::perform_fft_on_slice(
+            // Mixed-radix: use the standard Cooley-Tukey algorithm.
+            cooley_tukey_radix_n(
                 data,
-                &self.factors,
-                scratch,
                 &self.twiddles,
-                &mut twiddle_idx,
+                &self.factors,
+                &self.digit_reversal_permutation,
+                scratch_remainder,
             );
         }
     }
 
     /// Post-process N/2 complex FFT output to produce N/2+1.
     fn postprocess_fft(&self, fft_output: &[Complex32], output: &mut [Complex32]) {
-        let n = self.len;
-        let n2 = n / 2;
+        debug_assert_eq!(fft_output.len(), self.n2);
+        debug_assert!(output.len() > self.n2);
 
-        assert_eq!(fft_output.len(), n2);
-        assert!(output.len() > n2);
+        output[..self.n2].copy_from_slice(fft_output);
 
-        output[..n2].copy_from_slice(fft_output);
-
-        let (output_left, output_right) = output.split_at_mut(output.len() / 2);
+        let split_point = output.len() / 2;
+        let (output_left, output_right) = output.split_at_mut(split_point);
 
         // Handle DC and Nyquist bins first (no twiddles needed).
         // Extract first element's real and imaginary for special processing.
@@ -467,48 +425,43 @@ impl<D> RadixFFT<D> {
         output: &mut [Complex32],
         scratchpad: &mut [Complex32],
     ) {
-        assert!(input.len() <= self.len);
-        assert!(output.len() > self.len / 2);
-        assert!(
+        debug_assert!(input.len() <= self.n);
+        debug_assert!(output.len() > self.n2);
+        debug_assert!(
             scratchpad.len() >= self.scratchpad_size(),
             "Scratchpad size must be at least {}",
             self.scratchpad_size()
         );
 
-        let n = self.len;
-        let n2 = n / 2; // N/2 optimization
-
-        let (fft_scratch, temp_scratch) = scratchpad.split_at_mut(n);
-
         // Reinterpret N real values as N/2 complex values by pairing consecutive samples.
-        if input.len() >= n {
+        if input.len() >= self.n {
             let buf_in = unsafe {
                 let ptr = input.as_ptr() as *const Complex32;
-                std::slice::from_raw_parts(ptr, n2)
+                std::slice::from_raw_parts(ptr, self.n2)
             };
-            fft_scratch[..n2].copy_from_slice(buf_in);
+            scratchpad[..self.n2].copy_from_slice(buf_in);
         } else {
             let available_pairs = input.len() / 2;
             if available_pairs > 0 {
                 unsafe {
                     let ptr = input.as_ptr() as *const Complex32;
                     let buf_in = std::slice::from_raw_parts(ptr, available_pairs);
-                    fft_scratch[..available_pairs].copy_from_slice(buf_in);
+                    scratchpad[..available_pairs].copy_from_slice(buf_in);
                 }
             }
 
             if input.len() % 2 == 1 {
-                fft_scratch[available_pairs] = Complex32::new(input[input.len() - 1], 0.0);
+                scratchpad[available_pairs] = Complex32::new(input[input.len() - 1], 0.0);
             }
 
             // Zero-pad the rest.
-            for i in (available_pairs + (input.len() % 2))..n2 {
-                fft_scratch[i] = Complex32::new(0.0, 0.0);
+            for i in (available_pairs + (input.len() % 2))..self.n2 {
+                scratchpad[i] = Complex32::new(0.0, 0.0);
             }
         }
 
-        self.process_forward_complex(&mut fft_scratch[..n2], temp_scratch);
-        self.postprocess_fft(&fft_scratch[..n2], output);
+        self.process_forward_complex(scratchpad);
+        self.postprocess_fft(&scratchpad[..self.n2], output);
     }
 
     /// Internal inverse complex -> real FFT using N/2 optimization.
@@ -518,53 +471,46 @@ impl<D> RadixFFT<D> {
         output: &mut [f32],
         scratchpad: &mut [Complex32],
     ) {
-        assert!(output.len() >= self.len);
-        assert!(input.len() > self.len / 2);
-        assert!(
+        debug_assert!(output.len() >= self.n);
+        debug_assert!(input.len() > self.n2);
+        debug_assert!(
             scratchpad.len() >= self.scratchpad_size(),
             "Scratchpad size must be at least {}",
             self.scratchpad_size()
         );
 
-        let n = self.len;
-        let n2 = n / 2;
-
-        let (fft_scratch, temp_scratch) = scratchpad.split_at_mut(n);
-
         // Copy input to scratch buffer (need N/2+1 elements including Nyquist bin).
-        fft_scratch[..input.len()].copy_from_slice(input);
+        scratchpad[..input.len()].copy_from_slice(input);
 
-        self.preprocess_ifft(&mut fft_scratch[..n2 + 1]);
-        self.process_inverse_complex(&mut fft_scratch[..n2], temp_scratch);
+        self.preprocess_ifft(&mut scratchpad[..self.n2 + 1]);
+        self.process_inverse_complex(scratchpad);
 
-        if output.len() >= n {
+        if output.len() >= self.n {
             let buf_out = unsafe {
                 let ptr = output.as_mut_ptr() as *mut Complex32;
-                std::slice::from_raw_parts_mut(ptr, n2)
+                std::slice::from_raw_parts_mut(ptr, self.n2)
             };
-            buf_out.copy_from_slice(&fft_scratch[..n2]);
+            buf_out.copy_from_slice(&scratchpad[..self.n2]);
         } else {
-            for i in 0..n2 {
+            for i in 0..self.n2 {
                 if 2 * i < output.len() {
-                    output[2 * i] = fft_scratch[i].re;
+                    output[2 * i] = scratchpad[i].re;
                 }
                 if 2 * i + 1 < output.len() {
-                    output[2 * i + 1] = fft_scratch[i].im;
+                    output[2 * i + 1] = scratchpad[i].im;
                 }
             }
         }
 
         // Zero-pad remaining output if needed.
-        for i in n..output.len() {
+        for i in self.n..output.len() {
             output[i] = 0.0;
         }
     }
 
     /// Pre-process real FFT input to prepare for N/2-point inverse complex FFT.
     fn preprocess_ifft(&self, buffer: &mut [Complex32]) {
-        let n = self.len;
-        let n2 = n / 2;
-        assert!(buffer.len() > n2);
+        debug_assert!(buffer.len() > self.n2);
 
         let (input_left, input_right) = buffer.split_at_mut(buffer.len() / 2);
 
@@ -621,9 +567,14 @@ impl<D> RadixFFT<D> {
     }
 
     /// Perform N/2-point complex inverse FFT for the N/2 optimization.
-    fn process_inverse_complex(&self, data: &mut [Complex32], scratch: &mut [Complex32]) {
-        let n2 = self.len / 2;
-        assert_eq!(data.len(), n2);
+    ///
+    /// # Arguments
+    /// * `scratchpad` - Scratch buffer where first n2 elements contain the FFT data,
+    ///                  and remaining elements can be used for temporary storage
+    fn process_inverse_complex(&self, scratchpad: &mut [Complex32]) {
+        debug_assert!(scratchpad.len() >= self.n);
+
+        let (data, scratch_remainder) = scratchpad.split_at_mut(self.n2);
 
         // Conjugate input
         for x in data.iter_mut() {
@@ -637,17 +588,17 @@ impl<D> RadixFFT<D> {
             // Single factor
             Self::apply_single_butterfly(data, self.factors[0]);
         } else if self.is_pure_radix2 {
-            // Pure radix-2: use Cooley-Tukey algorithm
-            cooley_tukey_radix2(data, &self.twiddles, &self.factors);
+            // Pure radix-2: use optimized Cooley-Tukey algorithm
+            cooley_tukey_radix_2(data, &self.twiddles, &self.factors);
         } else {
-            // Multi-factor: use Six-Step algorithm with pre-computed twiddles
-            let mut twiddle_idx = 0;
-            Self::perform_fft_on_slice(
+            // Mixed-radix: use standard Cooley-Tukey algorithm
+            // Use scratch_remainder as temporary buffer for permutation
+            cooley_tukey_radix_n(
                 data,
-                &self.factors,
-                scratch,
                 &self.twiddles,
-                &mut twiddle_idx,
+                &self.factors,
+                &self.digit_reversal_permutation,
+                scratch_remainder,
             );
         }
 
@@ -702,38 +653,40 @@ mod tests {
     const SINGLE_STAGE_FACTORS: &[Radix] = &[Radix::Factor2, Radix::Factor4];
 
     /// Multi-stage radix factor combinations to test (only even lengths for N/2 optimization).
+    ///
+    /// Grouped by N/2 factors (result after N/2 optimization) to identify failure patterns.
+    /// SUSPECTED FAILING GROUP at top: configs resulting in [2, 3] after N/2 optimization.
     const MULTI_STAGE_FACTORS: &[(&[Radix], &str)] = &[
-        // Two-stage combinations (even lengths only)
         (&[Radix::Factor2, Radix::Factor2], "2x2"),
         (&[Radix::Factor2, Radix::Factor3], "2x3"),
+        (&[Radix::Factor3, Radix::Factor2], "3x2"),
         (&[Radix::Factor2, Radix::Factor4], "2x4"),
         (&[Radix::Factor2, Radix::Factor5], "2x5"),
-        (&[Radix::Factor3, Radix::Factor2], "3x2"),
-        (&[Radix::Factor4, Radix::Factor3], "4x3"),
-        (&[Radix::Factor4, Radix::Factor4], "4x4"),
         (&[Radix::Factor5, Radix::Factor2], "5x2"),
         (&[Radix::Factor2, Radix::Factor7], "2x7"),
         (&[Radix::Factor7, Radix::Factor2], "7x2"),
-        // Three-stage combinations (even lengths only)
-        (&[Radix::Factor2, Radix::Factor2, Radix::Factor2], "2x2x2"),
+        (&[Radix::Factor4, Radix::Factor3], "4x3"),
+        (&[Radix::Factor3, Radix::Factor4], "3x4"),
+        (&[Radix::Factor4, Radix::Factor4], "4x4"),
         (&[Radix::Factor2, Radix::Factor2, Radix::Factor3], "2x2x3"),
+        (&[Radix::Factor2, Radix::Factor3, Radix::Factor2], "2x3x2"),
+        (&[Radix::Factor3, Radix::Factor2, Radix::Factor2], "3x2x2"),
         (&[Radix::Factor2, Radix::Factor2, Radix::Factor4], "2x2x4"),
         (&[Radix::Factor2, Radix::Factor2, Radix::Factor5], "2x2x5"),
-        (&[Radix::Factor2, Radix::Factor3, Radix::Factor2], "2x3x2"),
-        (&[Radix::Factor2, Radix::Factor4, Radix::Factor2], "2x4x2"),
-        (&[Radix::Factor2, Radix::Factor4, Radix::Factor4], "2x4x4"),
-        (&[Radix::Factor3, Radix::Factor2, Radix::Factor2], "3x2x2"),
-        (&[Radix::Factor3, Radix::Factor2, Radix::Factor5], "3x2x5"),
-        (&[Radix::Factor3, Radix::Factor5, Radix::Factor2], "3x5x2"),
-        (&[Radix::Factor4, Radix::Factor2, Radix::Factor2], "4x2x2"),
-        (&[Radix::Factor4, Radix::Factor2, Radix::Factor4], "4x2x4"),
-        (&[Radix::Factor4, Radix::Factor3, Radix::Factor2], "4x3x2"),
-        (&[Radix::Factor4, Radix::Factor4, Radix::Factor4], "4x4x4"),
         (&[Radix::Factor5, Radix::Factor2, Radix::Factor3], "5x2x3"),
         (&[Radix::Factor5, Radix::Factor3, Radix::Factor2], "5x3x2"),
-        (&[Radix::Factor2, Radix::Factor2, Radix::Factor7], "2x2x7"),
-        (&[Radix::Factor2, Radix::Factor3, Radix::Factor7], "2x3x7"),
         (&[Radix::Factor2, Radix::Factor7, Radix::Factor3], "2x7x3"),
+        (&[Radix::Factor4, Radix::Factor4, Radix::Factor4], "4x4x4"),
+        (&[Radix::Factor2, Radix::Factor2, Radix::Factor7], "2x2x7"),
+        (&[Radix::Factor3, Radix::Factor2, Radix::Factor5], "3x2x5"),
+        (&[Radix::Factor3, Radix::Factor5, Radix::Factor2], "3x5x2"),
+        (&[Radix::Factor2, Radix::Factor3, Radix::Factor7], "2x3x7"),
+        (&[Radix::Factor2, Radix::Factor4, Radix::Factor2], "2x4x2"),
+        (&[Radix::Factor4, Radix::Factor2, Radix::Factor2], "4x2x2"),
+        (&[Radix::Factor4, Radix::Factor3, Radix::Factor2], "4x3x2"),
+        (&[Radix::Factor2, Radix::Factor2, Radix::Factor2], "2x2x2"),
+        (&[Radix::Factor4, Radix::Factor2, Radix::Factor4], "4x2x4"),
+        (&[Radix::Factor2, Radix::Factor4, Radix::Factor4], "2x4x4"),
     ];
 
     fn approx_eq(a: f32, b: f32, epsilon: f32) -> bool {
@@ -745,8 +698,91 @@ mod tests {
     }
 
     fn make_multiplier(size: usize) -> usize {
-        assert!(size.is_power_of_two(), "Size must be power of two");
+        debug_assert!(size.is_power_of_two(), "Size must be power of two");
         size.trailing_zeros() as usize
+    }
+
+    #[test]
+    fn test_digit_reversal_permutation_validity() {
+        // Test that digit reversal permutation produces valid indices (all < n).
+        // This prevents index out of bounds errors that occur when the algorithm is incorrect.
+
+        // Test various radix combinations
+        let test_cases = vec![
+            (vec![Radix::Factor2, Radix::Factor3], "2x3"),
+            (vec![Radix::Factor3, Radix::Factor2], "3x2"),
+            (vec![Radix::Factor2, Radix::Factor5], "2x5"),
+            (vec![Radix::Factor2, Radix::Factor3, Radix::Factor5], "2x3x5"),
+            (vec![Radix::Factor5, Radix::Factor3, Radix::Factor2], "5x3x2"),
+            (vec![Radix::Factor2, Radix::Factor5, Radix::Factor7], "2x5x7"),
+            (vec![Radix::Factor2, Radix::Factor2, Radix::Factor2, Radix::Factor5, Radix::Factor7], "2x2x2x5x7"),
+        ];
+
+        for (radices, name) in test_cases {
+            let n: usize = radices.iter().map(|r| r.radix()).product();
+            let permutation = RadixFFT::<Forward>::compute_digit_reversal_permutation(n, &radices);
+
+            // Verify permutation has correct length
+            assert_eq!(
+                permutation.len(),
+                n,
+                "{}: permutation length {} != n {}",
+                name,
+                permutation.len(),
+                n
+            );
+
+            // Verify all indices are valid (< n)
+            for (i, &perm_idx) in permutation.iter().enumerate() {
+                assert!(
+                    perm_idx < n,
+                    "{}: permutation[{}] = {} >= n = {}",
+                    name,
+                    i,
+                    perm_idx,
+                    n
+                );
+            }
+
+            // Verify permutation is actually a permutation (bijective)
+            let mut seen = vec![false; n];
+            for &perm_idx in &permutation {
+                assert!(
+                    !seen[perm_idx],
+                    "{}: permutation has duplicate index {}",
+                    name,
+                    perm_idx
+                );
+                seen[perm_idx] = true;
+            }
+
+            // Spot check: index 0 should map to 0 (all digits are 0)
+            assert_eq!(
+                permutation[0], 0,
+                "{}: permutation[0] should be 0",
+                name
+            );
+
+            // Spot check for 2x3 case: verify a few known mappings
+            if radices == vec![Radix::Factor2, Radix::Factor3] {
+                // n = 6, radices [2,3]
+                // Index 1: digits = [1, 0], reversed reconstruction = 0*1 + 1*3 = 3
+                assert_eq!(
+                    permutation[1], 3,
+                    "2x3: permutation[1] should be 3"
+                );
+                // Index 2: digits = [0, 1], reversed reconstruction = 1*1 + 0*3 = 1
+                assert_eq!(
+                    permutation[2], 1,
+                    "2x3: permutation[2] should be 1"
+                );
+                // Index 4: digits = [0, 2], reversed reconstruction = 2*1 + 0*3 = 2
+                assert_eq!(
+                    permutation[4], 2,
+                    "2x3: permutation[4] should be 2"
+                );
+            }
+        }
     }
 
     #[test]
