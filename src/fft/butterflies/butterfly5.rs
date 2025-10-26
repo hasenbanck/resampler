@@ -153,28 +153,28 @@ unsafe fn butterfly_5_sse(
     stage_twiddles: &[Complex32],
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 2) * 2;
+    unsafe {
+        let simd_cols = (num_columns / 2) * 2;
 
-    // Broadcast W5 constants for SIMD operations.
-    let w5_1_re = _mm_set1_ps(W5_1_RE);
-    let w5_1_im = _mm_set1_ps(W5_1_IM);
-    let w5_2_re = _mm_set1_ps(W5_2_RE);
-    let w5_2_im = _mm_set1_ps(W5_2_IM);
-    let w5_3_re = _mm_set1_ps(W5_3_RE);
-    let w5_3_im = _mm_set1_ps(W5_3_IM);
-    let w5_4_re = _mm_set1_ps(W5_4_RE);
-    let w5_4_im = _mm_set1_ps(W5_4_IM);
+        // Broadcast W5 constants for SIMD operations.
+        let w5_1_re = _mm_set1_ps(W5_1_RE);
+        let w5_1_im = _mm_set1_ps(W5_1_IM);
+        let w5_2_re = _mm_set1_ps(W5_2_RE);
+        let w5_2_im = _mm_set1_ps(W5_2_IM);
+        let w5_3_re = _mm_set1_ps(W5_3_RE);
+        let w5_3_im = _mm_set1_ps(W5_3_IM);
+        let w5_4_re = _mm_set1_ps(W5_4_RE);
+        let w5_4_im = _mm_set1_ps(W5_4_IM);
 
-    // Mask for manual addsub emulation.
-    let neg_mask = _mm_castsi128_ps(_mm_set_epi32(
-        0,
-        0x80000000u32 as i32,
-        0,
-        0x80000000u32 as i32,
-    ));
+        // Mask for manual addsub emulation.
+        let neg_mask = _mm_castsi128_ps(_mm_set_epi32(
+            0,
+            0x80000000u32 as i32,
+            0,
+            0x80000000u32 as i32,
+        ));
 
-    for idx in (0..simd_cols).step_by(2) {
-        unsafe {
+        for idx in (0..simd_cols).step_by(2) {
             // Load 2 complex numbers from each row.
             // Layout: [x0[0].re, x0[0].im, x0[1].re, x0[1].im]
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
@@ -423,9 +423,9 @@ unsafe fn butterfly_5_sse(
             let y4_ptr = data.as_mut_ptr().add(idx + 4 * num_columns) as *mut f32;
             _mm_storeu_ps(y4_ptr, y4);
         }
-    }
 
-    butterfly_5_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        butterfly_5_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+    }
 }
 
 /// SSE3 implementation: processes 2 columns at once.
@@ -436,20 +436,20 @@ unsafe fn butterfly_5_sse3(
     stage_twiddles: &[Complex32],
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 2) * 2;
+    unsafe {
+        let simd_cols = (num_columns / 2) * 2;
 
-    // Broadcast W5 constants for SIMD operations.
-    let w5_1_re = _mm_set1_ps(W5_1_RE);
-    let w5_1_im = _mm_set1_ps(W5_1_IM);
-    let w5_2_re = _mm_set1_ps(W5_2_RE);
-    let w5_2_im = _mm_set1_ps(W5_2_IM);
-    let w5_3_re = _mm_set1_ps(W5_3_RE);
-    let w5_3_im = _mm_set1_ps(W5_3_IM);
-    let w5_4_re = _mm_set1_ps(W5_4_RE);
-    let w5_4_im = _mm_set1_ps(W5_4_IM);
+        // Broadcast W5 constants for SIMD operations.
+        let w5_1_re = _mm_set1_ps(W5_1_RE);
+        let w5_1_im = _mm_set1_ps(W5_1_IM);
+        let w5_2_re = _mm_set1_ps(W5_2_RE);
+        let w5_2_im = _mm_set1_ps(W5_2_IM);
+        let w5_3_re = _mm_set1_ps(W5_3_RE);
+        let w5_3_im = _mm_set1_ps(W5_3_IM);
+        let w5_4_re = _mm_set1_ps(W5_4_RE);
+        let w5_4_im = _mm_set1_ps(W5_4_IM);
 
-    for idx in (0..simd_cols).step_by(2) {
-        unsafe {
+        for idx in (0..simd_cols).step_by(2) {
             // Load 2 complex numbers from each row.
             // Layout: [x0[0].re, x0[0].im, x0[1].re, x0[1].im]
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
@@ -694,9 +694,9 @@ unsafe fn butterfly_5_sse3(
             let y4_ptr = data.as_mut_ptr().add(idx + 4 * num_columns) as *mut f32;
             _mm_storeu_ps(y4_ptr, y4);
         }
-    }
 
-    butterfly_5_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        butterfly_5_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+    }
 }
 
 /// AVX implementation: processes 4 columns at once.
@@ -711,20 +711,20 @@ unsafe fn butterfly_5_avx(
     stage_twiddles: &[Complex32],
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 4) * 4;
+    unsafe {
+        let simd_cols = (num_columns / 4) * 4;
 
-    // Broadcast W5 constants for SIMD operations.
-    let w5_1_re = _mm256_set1_ps(W5_1_RE);
-    let w5_1_im = _mm256_set1_ps(W5_1_IM);
-    let w5_2_re = _mm256_set1_ps(W5_2_RE);
-    let w5_2_im = _mm256_set1_ps(W5_2_IM);
-    let w5_3_re = _mm256_set1_ps(W5_3_RE);
-    let w5_3_im = _mm256_set1_ps(W5_3_IM);
-    let w5_4_re = _mm256_set1_ps(W5_4_RE);
-    let w5_4_im = _mm256_set1_ps(W5_4_IM);
+        // Broadcast W5 constants for SIMD operations.
+        let w5_1_re = _mm256_set1_ps(W5_1_RE);
+        let w5_1_im = _mm256_set1_ps(W5_1_IM);
+        let w5_2_re = _mm256_set1_ps(W5_2_RE);
+        let w5_2_im = _mm256_set1_ps(W5_2_IM);
+        let w5_3_re = _mm256_set1_ps(W5_3_RE);
+        let w5_3_im = _mm256_set1_ps(W5_3_IM);
+        let w5_4_re = _mm256_set1_ps(W5_4_RE);
+        let w5_4_im = _mm256_set1_ps(W5_4_IM);
 
-    for idx in (0..simd_cols).step_by(4) {
-        unsafe {
+        for idx in (0..simd_cols).step_by(4) {
             // Load 4 complex numbers from each row.
             // Layout: [x0[0].re, x0[0].im, x0[1].re, x0[1].im, x0[2].re, x0[2].im, x0[3].re, x0[3].im]
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
@@ -1016,9 +1016,9 @@ unsafe fn butterfly_5_avx(
             let y4_ptr = data.as_mut_ptr().add(idx + 4 * num_columns) as *mut f32;
             _mm256_storeu_ps(y4_ptr, y4);
         }
-    }
 
-    butterfly_5_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        butterfly_5_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+    }
 }
 
 /// AVX+FMA implementation: processes 4 columns at once using fused multiply-add.
@@ -1029,20 +1029,20 @@ unsafe fn butterfly_5_avx_fma(
     stage_twiddles: &[Complex32],
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 4) * 4;
+    unsafe {
+        let simd_cols = (num_columns / 4) * 4;
 
-    // Broadcast W5 constants for SIMD operations.
-    let w5_1_re = _mm256_set1_ps(W5_1_RE);
-    let w5_1_im = _mm256_set1_ps(W5_1_IM);
-    let w5_2_re = _mm256_set1_ps(W5_2_RE);
-    let w5_2_im = _mm256_set1_ps(W5_2_IM);
-    let w5_3_re = _mm256_set1_ps(W5_3_RE);
-    let w5_3_im = _mm256_set1_ps(W5_3_IM);
-    let w5_4_re = _mm256_set1_ps(W5_4_RE);
-    let w5_4_im = _mm256_set1_ps(W5_4_IM);
+        // Broadcast W5 constants for SIMD operations.
+        let w5_1_re = _mm256_set1_ps(W5_1_RE);
+        let w5_1_im = _mm256_set1_ps(W5_1_IM);
+        let w5_2_re = _mm256_set1_ps(W5_2_RE);
+        let w5_2_im = _mm256_set1_ps(W5_2_IM);
+        let w5_3_re = _mm256_set1_ps(W5_3_RE);
+        let w5_3_im = _mm256_set1_ps(W5_3_IM);
+        let w5_4_re = _mm256_set1_ps(W5_4_RE);
+        let w5_4_im = _mm256_set1_ps(W5_4_IM);
 
-    for idx in (0..simd_cols).step_by(4) {
-        unsafe {
+        for idx in (0..simd_cols).step_by(4) {
             // Load 4 complex numbers from each row.
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
             let x0 = _mm256_loadu_ps(x0_ptr);
@@ -1282,9 +1282,9 @@ unsafe fn butterfly_5_avx_fma(
             let y4_ptr = data.as_mut_ptr().add(idx + 4 * num_columns) as *mut f32;
             _mm256_storeu_ps(y4_ptr, y4);
         }
-    }
 
-    butterfly_5_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        butterfly_5_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+    }
 }
 
 /// Public API that dispatches to the best available SIMD implementation.

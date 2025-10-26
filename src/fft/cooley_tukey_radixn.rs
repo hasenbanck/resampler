@@ -18,15 +18,14 @@ fn apply_digit_reversal_permutation(
     scratch: &mut [Complex32],
 ) {
     let n = data.len();
-    debug_assert_eq!(n, permutation.len());
-    debug_assert!(scratch.len() >= n, "Scratch buffer too small");
 
-    for i in 0..n {
-        let perm = permutation[i];
-        scratch[i] = data[perm];
-    }
+    let temp = &mut scratch[..n];
 
-    data.copy_from_slice(&scratch[..n]);
+    temp.iter_mut().enumerate().for_each(|(i, x)| {
+        *x = data[permutation[i]];
+    });
+
+    data.copy_from_slice(temp);
 }
 
 /// Performs an in-place mixed-radix FFT using the Cooley-Tukey DIT algorithm.

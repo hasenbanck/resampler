@@ -251,6 +251,7 @@ impl FftResampler {
                     false => calculate_cutoff_kaiser(fft_size_input),
                 };
 
+                // TODO: Make the Kaiser's beta configurable. For this we need to make the cutoff calculatable.
                 let sincs = make_sincs_for_kaiser(fft_size_input, 1, cutoff as f32, KAISER_BETA);
                 let mut filter_time = vec![0.0; 2 * fft_size_input];
                 let mut filter_spectrum = vec![Complex32::zero(); fft_size_input + 1];
