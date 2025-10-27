@@ -27,11 +27,11 @@ pub(crate) fn make_sincs_for_kaiser(
 
     let mut sincs = vec![vec![0.0; sample_count]; factor];
 
-    for p in 0..sample_count {
-        for n in 0..factor {
+    (0..sample_count).for_each(|p| {
+        (0..factor).for_each(|n| {
             sincs[factor - n - 1][p] = y[factor * p + n] / sum;
-        }
-    }
+        });
+    });
 
     sincs
 }

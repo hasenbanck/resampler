@@ -17,7 +17,7 @@ use crate::{Radix, SampleRate, SampleRateFamily};
 /// | Between 16 kHz and 48 kHz    | 64         | 192         | 0.0%        | Radix-2             | Mixed-Radix (2,3)   | 2⁶ → 2⁶ × 3              |
 /// | Between 16 kHz and 44.1 kHz  | 640        | 882         | 0.0%        | Mixed-Radix (2,4,5) | Mixed-Radix (2,3,7) | 2 × 4⁴ × 5 → 2 × 3² × 7² |
 #[derive(Debug, Clone)]
-pub struct ConversionConfig {
+pub(crate) struct ConversionConfig {
     /// Base input FFT size (minimal latency).
     pub(crate) base_fft_size_in: usize,
     /// Base output FFT size (minimal latency).
@@ -30,7 +30,7 @@ pub struct ConversionConfig {
 
 impl ConversionConfig {
     /// Get the minimal FFT sizes needed for accurate conversion between sample rates.
-    pub fn from_sample_rates(
+    pub(crate) fn from_sample_rates(
         input_rate: SampleRate,
         output_rate: SampleRate,
     ) -> ConversionConfig {
@@ -42,9 +42,9 @@ impl ConversionConfig {
 
         let base_config = match (input_family, output_family) {
             // Same family: base 1:1 ratio (2 → 2)
-            (SampleRateFamily::_48000, SampleRateFamily::_48000)
-            | (SampleRateFamily::_22050, SampleRateFamily::_22050)
-            | (SampleRateFamily::_16000, SampleRateFamily::_16000) => ConversionConfig {
+            (SampleRateFamily::Hz48000, SampleRateFamily::Hz48000)
+            | (SampleRateFamily::Hz22050, SampleRateFamily::Hz22050)
+            | (SampleRateFamily::Hz16000, SampleRateFamily::Hz16000) => ConversionConfig {
                 base_fft_size_in: 2,
                 base_fft_size_out: 2,
                 base_factors_in: vec![Radix::Factor2],
@@ -52,7 +52,7 @@ impl ConversionConfig {
             },
 
             // 22.05 kHz → 48 kHz family (3 × 4 × 7 × 7 → 4⁴ × 5)
-            (SampleRateFamily::_22050, SampleRateFamily::_48000) => ConversionConfig {
+            (SampleRateFamily::Hz22050, SampleRateFamily::Hz48000) => ConversionConfig {
                 base_fft_size_in: 588,
                 base_fft_size_out: 1280,
                 base_factors_in: vec![
@@ -70,7 +70,7 @@ impl ConversionConfig {
                 ],
             },
             // 48 kHz → 22.05 kHz family (4⁴ × 5 → 3 × 4 × 7 × 7)
-            (SampleRateFamily::_48000, SampleRateFamily::_22050) => ConversionConfig {
+            (SampleRateFamily::Hz48000, SampleRateFamily::Hz22050) => ConversionConfig {
                 base_fft_size_in: 1280,
                 base_fft_size_out: 588,
                 base_factors_in: vec![
@@ -89,7 +89,7 @@ impl ConversionConfig {
             },
 
             // 16 kHz → 48 kHz family (2⁶ → 2⁶ × 3)
-            (SampleRateFamily::_16000, SampleRateFamily::_48000) => ConversionConfig {
+            (SampleRateFamily::Hz16000, SampleRateFamily::Hz48000) => ConversionConfig {
                 base_fft_size_in: 64,
                 base_fft_size_out: 192,
                 base_factors_in: vec![Radix::Factor2; 6],
@@ -101,7 +101,7 @@ impl ConversionConfig {
                 ],
             },
             // 48 kHz → 16 kHz family (2⁶ × 3 → 2⁶)
-            (SampleRateFamily::_48000, SampleRateFamily::_16000) => ConversionConfig {
+            (SampleRateFamily::Hz48000, SampleRateFamily::Hz16000) => ConversionConfig {
                 base_fft_size_in: 192,
                 base_fft_size_out: 64,
                 base_factors_in: vec![
@@ -114,7 +114,7 @@ impl ConversionConfig {
             },
 
             // 16 kHz → 22.05 kHz family (2 × 4⁴ × 5 → 2 × 3² × 7²)
-            (SampleRateFamily::_16000, SampleRateFamily::_22050) => ConversionConfig {
+            (SampleRateFamily::Hz16000, SampleRateFamily::Hz22050) => ConversionConfig {
                 base_fft_size_in: 640,
                 base_fft_size_out: 882,
                 base_factors_in: vec![
@@ -133,7 +133,7 @@ impl ConversionConfig {
                 ],
             },
             // 22.05 kHz → 16 kHz family (2 × 3² × 7² → 2 × 4⁴ × 5)
-            (SampleRateFamily::_22050, SampleRateFamily::_16000) => ConversionConfig {
+            (SampleRateFamily::Hz22050, SampleRateFamily::Hz16000) => ConversionConfig {
                 base_fft_size_in: 882,
                 base_fft_size_out: 640,
                 base_factors_in: vec![
@@ -216,7 +216,7 @@ impl ConversionConfig {
     /// Scale the base FFT sizes to ensure a minimum of 512 input samples.
     ///
     /// Returns: (input_size, input_factors, output_size, output_factors)
-    pub fn scale_for_throughput(&self) -> (usize, Vec<Radix>, usize, Vec<Radix>) {
+    pub(crate) fn scale_for_throughput(&self) -> (usize, Vec<Radix>, usize, Vec<Radix>) {
         const TARGET_INPUT_SAMPLES: usize = 512;
 
         // Calculate the multiplier needed to reach target input samples.
@@ -260,42 +260,42 @@ mod tests {
 
     #[test]
     fn test_conversion_config_48000_to_96000() {
-        let config = ConversionConfig::from_sample_rates(SampleRate::_48000, SampleRate::_96000);
+        let config = ConversionConfig::from_sample_rates(SampleRate::Hz48000, SampleRate::Hz96000);
         assert_eq!(config.base_fft_size_in, 2);
         assert_eq!(config.base_fft_size_out, 4);
     }
 
     #[test]
     fn test_conversion_config_48000_to_192000() {
-        let config = ConversionConfig::from_sample_rates(SampleRate::_48000, SampleRate::_192000);
+        let config = ConversionConfig::from_sample_rates(SampleRate::Hz48000, SampleRate::Hz192000);
         assert_eq!(config.base_fft_size_in, 2);
         assert_eq!(config.base_fft_size_out, 8);
     }
 
     #[test]
     fn test_conversion_config_22050_to_48000() {
-        let config = ConversionConfig::from_sample_rates(SampleRate::_22050, SampleRate::_48000);
+        let config = ConversionConfig::from_sample_rates(SampleRate::Hz22050, SampleRate::Hz48000);
         assert_eq!(config.base_fft_size_in, 588);
         assert_eq!(config.base_fft_size_out, 1280);
     }
 
     #[test]
     fn test_conversion_config_16000_to_48000() {
-        let config = ConversionConfig::from_sample_rates(SampleRate::_16000, SampleRate::_48000);
+        let config = ConversionConfig::from_sample_rates(SampleRate::Hz16000, SampleRate::Hz48000);
         assert_eq!(config.base_fft_size_in, 64);
         assert_eq!(config.base_fft_size_out, 192);
     }
 
     #[test]
     fn test_conversion_config_16000_to_44100() {
-        let config = ConversionConfig::from_sample_rates(SampleRate::_16000, SampleRate::_44100);
+        let config = ConversionConfig::from_sample_rates(SampleRate::Hz16000, SampleRate::Hz44100);
         assert_eq!(config.base_fft_size_in, 640);
         assert_eq!(config.base_fft_size_out, 1764);
     }
 
     #[test]
     fn test_conversion_config_44100_to_48000() {
-        let config = ConversionConfig::from_sample_rates(SampleRate::_44100, SampleRate::_48000);
+        let config = ConversionConfig::from_sample_rates(SampleRate::Hz44100, SampleRate::Hz48000);
         assert_eq!(config.base_fft_size_in, 1176);
         assert_eq!(config.base_fft_size_out, 1280);
 
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_conversion_config_44100_to_96000() {
-        let config = ConversionConfig::from_sample_rates(SampleRate::_44100, SampleRate::_96000);
+        let config = ConversionConfig::from_sample_rates(SampleRate::Hz44100, SampleRate::Hz96000);
         assert_eq!(config.base_fft_size_in, 1176);
         assert_eq!(config.base_fft_size_out, 2560);
 

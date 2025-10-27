@@ -1,19 +1,17 @@
 [package]
-name = "rsampler"
+name = "resampler"
+description = "A small FFT based audio resampling library"
+authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
-hound = "3.5"
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }
 rand_aes = "0.5"
-
-[[bench]]
-name = "benchmark_fft"
-harness = false
 
 [[bench]]
 name = "benchmark_resampler"
@@ -21,3 +19,6 @@ harness = false
 
 [lib]
 bench = false
+
+[workspace]
+members = [".", "resample"]

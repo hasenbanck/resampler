@@ -7,11 +7,11 @@ mod neon;
 #[cfg(target_arch = "x86_64")]
 mod sse;
 
-#[cfg(any(all(
+#[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx",
     any(not(target_feature = "fma"), test)
-)))]
+))]
 use avx::butterfly_4_avx;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
 use avx::butterfly_4_avx_fma;

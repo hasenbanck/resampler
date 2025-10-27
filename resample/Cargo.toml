@@ -1,0 +1,11 @@
+[package]
+name = "resample"
+description = "A simple resampling CLI to resample WAV files"
+authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+hound = "3.5"
+resampler = { path = ".." }

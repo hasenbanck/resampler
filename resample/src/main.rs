@@ -1,20 +1,30 @@
 use std::{env, time::Instant};
 
 use hound::{WavReader, WavWriter};
-use rsampler::{Resampler, SampleRate};
+use resampler::{Resampler, SampleRate};
+
+mod linear_resampler;
+use linear_resampler::LinearResampler;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() != 4 {
+    if args.len() != 4 && args.len() != 5 {
         eprintln!(
-            "Usage: {} --sample-rate=<rate> <input.wav> <output.wav>",
+            "Usage: {} [--linear] --sample-rate=<rate> <input.wav> <output.wav>",
             args[0]
+        );
+        eprintln!(
+            "  --linear: Use linear interpolation instead of FFT resampling (much lower quality)"
         );
         std::process::exit(1);
     }
 
-    let sample_rate_arg = &args[1];
+    let use_linear = args.iter().any(|arg| arg == "--linear");
+
+    let (sample_rate_idx, input_idx, output_idx) = if use_linear { (2, 3, 4) } else { (1, 2, 3) };
+
+    let sample_rate_arg = &args[sample_rate_idx];
     let target_sample_rate = if sample_rate_arg.starts_with("--sample-rate=") {
         sample_rate_arg
             .strip_prefix("--sample-rate=")
@@ -26,10 +36,9 @@ fn main() {
         std::process::exit(1);
     };
 
-    let input_path = &args[2];
-    let output_path = &args[3];
+    let input_path = &args[input_idx];
+    let output_path = &args[output_idx];
 
-    // Read input WAV file.
     let mut reader = WavReader::open(input_path).unwrap();
     let spec = reader.spec();
     let input_sample_rate = spec.sample_rate;
@@ -38,15 +47,21 @@ fn main() {
         "Input: {} Hz, {} channels, {} bits",
         spec.sample_rate, spec.channels, spec.bits_per_sample
     );
-    println!("Output: {} Hz", target_sample_rate);
+    println!("Output: {target_sample_rate} Hz");
+    println!(
+        "Method: {}",
+        if use_linear {
+            "Linear interpolation"
+        } else {
+            "FFT resampling"
+        }
+    );
 
-    // Convert sample rates to SampleRate enum.
     let input_rate = match SampleRate::try_from(input_sample_rate as usize) {
         Ok(rate) => rate,
         Err(_) => {
             eprintln!(
-                "Unsupported input sample rate: {}. Supported rates: 16000, 22050, 32000, 44100, 48000, 96000",
-                input_sample_rate
+                "Unsupported input sample rate: {input_sample_rate}. Supported rates: 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 384000"
             );
             std::process::exit(1);
         }
@@ -56,8 +71,7 @@ fn main() {
         Ok(rate) => rate,
         Err(_) => {
             eprintln!(
-                "Unsupported output sample rate: {}. Supported rates: 16000, 22050, 32000, 44100, 48000, 96000",
-                target_sample_rate
+                "Unsupported output sample rate: {target_sample_rate}. Supported rates: 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000, 384000"
             );
             std::process::exit(1);
         }
@@ -82,8 +96,8 @@ fn main() {
         1 => {
             // Mono: duplicate to both channels.
             for &sample in &samples {
-                stereo_samples.push(sample); // left
-                stereo_samples.push(sample); // right
+                stereo_samples.push(sample);
+                stereo_samples.push(sample);
             }
         }
         2 => {
@@ -97,25 +111,27 @@ fn main() {
     };
 
     let input_frames = stereo_samples.len() / 2;
-    println!("Input frames: {}", input_frames);
-
-    let input_size_mib = (stereo_samples.len() * size_of::<f32>()) as f64 / (1024.0 * 1024.0);
-
-    let mut resampler = Resampler::<2>::new(input_rate, output_rate);
+    println!("Input frames: {input_frames}");
 
     let start = Instant::now();
-    let resampled_samples = resample_batch(&mut resampler, &stereo_samples);
+    let resampled_samples = if use_linear {
+        resample_batch_linear(input_rate, output_rate, &stereo_samples)
+    } else {
+        let mut resampler = Resampler::<2>::new(input_rate, output_rate);
+        resample_batch(&mut resampler, &stereo_samples)
+    };
+
     let elapsed = start.elapsed();
+    let input_size_mib = (resampled_samples.len() * size_of::<f32>()) as f64 / (1024.0 * 1024.0);
 
     let output_frames = resampled_samples.len() / 2;
-    println!("Output frames: {}", output_frames);
+    println!("Output frames: {output_frames}");
 
     let elapsed_secs = elapsed.as_secs_f64();
     let throughput_mib_per_sec = input_size_mib / elapsed_secs;
     println!(
-        "Resampling took {:.3} ms ({:.2} MiB/s)",
-        elapsed.as_secs_f64() * 1000.0,
-        throughput_mib_per_sec
+        "Resampling took {:.3} ms ({throughput_mib_per_sec:.2} MiB/s)",
+        elapsed.as_secs_f64() * 1000.0
     );
 
     let output_spec = hound::WavSpec {
@@ -142,10 +158,9 @@ fn resample_batch(resampler: &mut Resampler<2>, input_samples: &[f32]) -> Vec<f3
     let chunk_size_output = resampler.chunk_size_output();
 
     // Calculate how many complete chunks we can process and if there's a partial chunk.
-    let input_frames = input_samples.len() / 2;
-    let num_complete_chunks = input_frames / chunk_size_input;
-    let remaining_frames = input_frames % chunk_size_input;
-    let has_partial_chunk = remaining_frames > 0;
+    let num_complete_chunks = input_samples.len() / chunk_size_input;
+    let remaining_samples = input_samples.len() % chunk_size_input;
+    let has_partial_chunk = remaining_samples > 0;
 
     // Total chunks includes the partial chunk if present.
     let total_chunks = if has_partial_chunk {
@@ -154,45 +169,55 @@ fn resample_batch(resampler: &mut Resampler<2>, input_samples: &[f32]) -> Vec<f3
         num_complete_chunks
     };
 
-    let total_output_samples = total_chunks * chunk_size_output * 2;
+    let total_output_samples = total_chunks * chunk_size_output;
     let mut output_samples = vec![0.0f32; total_output_samples];
 
     // Process all complete chunks directly from input (no copying).
     for chunk_idx in 0..num_complete_chunks {
-        let input_start = chunk_idx * chunk_size_input * 2;
-        let input_end = input_start + chunk_size_input * 2;
-        let output_start = chunk_idx * chunk_size_output * 2;
-        let output_end = output_start + chunk_size_output * 2;
+        let input_start = chunk_idx * chunk_size_input;
+        let input_end = input_start + chunk_size_input;
+        let output_start = chunk_idx * chunk_size_output;
+        let output_end = output_start + chunk_size_output;
 
         let input_chunk = &input_samples[input_start..input_end];
         let output_chunk = &mut output_samples[output_start..output_end];
 
         resampler
-            .process_into_buffer(input_chunk, output_chunk)
+            .resample(input_chunk, output_chunk)
             .expect("Resampling failed");
     }
 
     // Process the last partial chunk if it exists (copy and pad with zeros).
     if has_partial_chunk {
-        let input_start = num_complete_chunks * chunk_size_input * 2;
-        let mut padded_chunk = vec![0.0f32; chunk_size_input * 2];
+        let input_start = num_complete_chunks * chunk_size_input;
+        let mut padded_chunk = vec![0.0f32; chunk_size_input];
         padded_chunk[..input_samples.len() - input_start]
             .copy_from_slice(&input_samples[input_start..]);
 
-        let output_start = num_complete_chunks * chunk_size_output * 2;
-        let output_end = output_start + chunk_size_output * 2;
+        let output_start = num_complete_chunks * chunk_size_output;
+        let output_end = output_start + chunk_size_output;
         let output_chunk = &mut output_samples[output_start..output_end];
 
         resampler
-            .process_into_buffer(&padded_chunk, output_chunk)
+            .resample(&padded_chunk, output_chunk)
             .expect("Resampling failed");
     }
 
     // Trim to expected output length based on original input length.
-    let input_frames = input_samples.len() / 2;
-    let expected_output_frames =
-        (input_frames as f64 * chunk_size_output as f64 / chunk_size_input as f64).ceil() as usize;
-    output_samples.truncate(expected_output_frames * 2);
+    let expected_output_samples = (input_samples.len() as f64 * chunk_size_output as f64
+        / chunk_size_input as f64)
+        .ceil() as usize;
+    output_samples.truncate(expected_output_samples);
 
     output_samples
+}
+
+/// Resample using linear interpolation (simple, lower quality).
+fn resample_batch_linear(
+    input_rate: SampleRate,
+    output_rate: SampleRate,
+    input_samples: &[f32],
+) -> Vec<f32> {
+    let resampler = LinearResampler::<2>::new(input_rate, output_rate);
+    resampler.resample(input_samples)
 }

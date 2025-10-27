@@ -32,6 +32,11 @@ impl Clone for FftCacheData {
 static FFT_CACHE: LazyLock<Mutex<HashMap<(usize, usize), FftCacheData>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// High-quality and high-performance FFT-based audio resampler supporting multi-channel audio.
+///
+/// `Resampler` uses the overlap-add FFT method with Kaiser windowing to convert audio
+/// between different sample rates. The const generic parameter `CHANNEL` specifies the
+/// number of audio channels (e.g., 1 for mono, 2 for stereo).
 pub struct Resampler<const CHANNEL: usize> {
     fft_resampler: FftResampler,
     chunk_size_input: usize,
@@ -59,8 +64,8 @@ impl<const CHANNEL: usize> Resampler<CHANNEL> {
 
         let overlaps: [Vec<f32>; CHANNEL] = array::from_fn(|_| vec![0.0; fft_size_output]);
 
-        let chunk_size_input = fft_size_input;
-        let chunk_size_output = fft_size_output;
+        let chunk_size_input = fft_size_input * CHANNEL;
+        let chunk_size_output = fft_size_output * CHANNEL;
 
         let needed_input_buffer_size = chunk_size_input + fft_size_input;
         let needed_output_buffer_size = chunk_size_output + fft_size_output;
@@ -87,10 +92,18 @@ impl<const CHANNEL: usize> Resampler<CHANNEL> {
         }
     }
 
+    /// Returns the required input buffer size in total f32 values (including all channels).
+    ///
+    /// For example, with a stereo resampler (CHANNEL=2), this returns the total number
+    /// of f32 values needed in the interleaved input buffer [L0, R0, L1, R1, ...].
     pub fn chunk_size_input(&self) -> usize {
         self.chunk_size_input
     }
 
+    /// Returns the required output buffer size in total f32 values (including all channels).
+    ///
+    /// For example, with a stereo resampler (CHANNEL=2), this returns the total number
+    /// of f32 values needed in the interleaved output buffer [L0, R0, L1, R1, ...].
     pub fn chunk_size_output(&self) -> usize {
         self.chunk_size_output
     }
@@ -103,33 +116,54 @@ impl<const CHANNEL: usize> Resampler<CHANNEL> {
         self.fft_size_input / 2
     }
 
-    /// Input and output must be interleaved f32 slices. For example stereo
-    /// would need to have the format [L0, R0, L1, R1, ...].
-    pub fn process_into_buffer(
-        &mut self,
-        input: &[f32],
-        output: &mut [f32],
-    ) -> Result<(usize, usize), ResampleError> {
-        let expected_input_len = CHANNEL * self.chunk_size_input;
-        let min_output_len = CHANNEL * self.chunk_size_output;
+    /// Processes one chunk of audio, resampling from input to output sample rate.
+    ///
+    /// Input and output must be interleaved f32 slices with all channels interleaved.
+    /// For stereo audio, the format is `[L0, R0, L1, R1, ...]`. For mono, it's `[S0, S1, S2, ...]`.
+    ///
+    /// ## Parameters
+    ///
+    /// - `input`: Interleaved input samples. Must contain at least [`chunk_size_input()`](Self::chunk_size_input) values.
+    /// - `output`: Interleaved output buffer. Must have capacity for at least [`chunk_size_output()`](Self::chunk_size_output) values.
+    ///
+    /// ## Example
+    ///
+    /// ```rust
+    /// use resampler::{Resampler, SampleRate};
+    ///
+    /// let mut resampler = Resampler::<1>::new(SampleRate::Hz48000, SampleRate::Hz44100);
+    ///
+    /// let input = vec![0.0f32; resampler.chunk_size_input()];
+    /// let mut output = vec![0.0f32; resampler.chunk_size_output()];
+    ///
+    /// match resampler.resample(&input, &mut output) {
+    ///     Ok(()) => {
+    ///         println!("Resample successfully");
+    ///     }
+    ///     Err(error) => eprintln!("Resampling error: {error:?}"),
+    /// }
+    /// ```
+    pub fn resample(&mut self, input: &[f32], output: &mut [f32]) -> Result<(), ResampleError> {
+        let expected_input_len = self.chunk_size_input;
+        let min_output_len = self.chunk_size_output;
 
         if input.len() < expected_input_len {
-            return Err(ResampleError::InputBufferSizeSize);
+            return Err(ResampleError::InputBufferSize);
         }
 
         if output.len() < min_output_len {
-            return Err(ResampleError::OutputBufferSizeSize);
+            return Err(ResampleError::OutputBufferSize);
         }
 
         // Deinterleave input into per-channel scratch buffers.
-        for frame_index in 0..self.chunk_size_input {
-            for channel in 0..CHANNEL {
+        (0..self.fft_size_input).for_each(|frame_index| {
+            (0..CHANNEL).for_each(|channel| {
                 self.input_scratch[channel][frame_index] = input[frame_index * CHANNEL + channel];
-            }
-        }
+            });
+        });
 
         let (subchunks_to_process, output_scratch_offset) = (
-            self.chunk_size_input / self.fft_size_input,
+            self.chunk_size_input / (self.fft_size_input * CHANNEL),
             self.saved_frames,
         );
 
@@ -149,13 +183,13 @@ impl<const CHANNEL: usize> Resampler<CHANNEL> {
         }
 
         // Deinterleave output from per-channel scratch buffers.
-        for frame_index in 0..self.chunk_size_output {
-            for channel in 0..CHANNEL {
+        (0..self.fft_size_output).for_each(|frame_index| {
+            (0..CHANNEL).for_each(|channel| {
                 output[frame_index * CHANNEL + channel] = self.output_scratch[channel][frame_index];
-            }
-        }
+            });
+        });
 
-        Ok((self.chunk_size_input, self.chunk_size_output))
+        Ok(())
     }
 }
 
@@ -313,8 +347,9 @@ impl FftResampler {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::f32::consts::PI;
+
+    use super::*;
 
     const EPSILON: f32 = 0.02;
 
@@ -325,12 +360,12 @@ mod tests {
     #[test]
     fn test_dc_signal_amplitude_preservation() {
         let test_cases = vec![
-            (SampleRate::_48000, SampleRate::_44100, "48kHz -> 44.1kHz"),
-            (SampleRate::_44100, SampleRate::_48000, "44.1kHz -> 48kHz"),
-            (SampleRate::_48000, SampleRate::_32000, "48kHz -> 32kHz"),
-            (SampleRate::_32000, SampleRate::_48000, "32kHz -> 48kHz"),
-            (SampleRate::_96000, SampleRate::_48000, "96kHz -> 48kHz"),
-            (SampleRate::_48000, SampleRate::_96000, "48kHz -> 96kHz"),
+            (SampleRate::Hz48000, SampleRate::Hz44100, "48kHz -> 44.1kHz"),
+            (SampleRate::Hz44100, SampleRate::Hz48000, "44.1kHz -> 48kHz"),
+            (SampleRate::Hz48000, SampleRate::Hz32000, "48kHz -> 32kHz"),
+            (SampleRate::Hz32000, SampleRate::Hz48000, "32kHz -> 48kHz"),
+            (SampleRate::Hz96000, SampleRate::Hz48000, "96kHz -> 48kHz"),
+            (SampleRate::Hz48000, SampleRate::Hz96000, "48kHz -> 96kHz"),
         ];
 
         for (input_rate, output_rate, desc) in test_cases {
@@ -341,7 +376,7 @@ mod tests {
             let mut output = vec![0.0f32; resampler.chunk_size_output()];
 
             for _ in 0..5 {
-                let _ = resampler.process_into_buffer(&input, &mut output);
+                let _ = resampler.resample(&input, &mut output);
             }
 
             let delay = resampler.delay();
@@ -362,9 +397,9 @@ mod tests {
     #[test]
     fn test_sine_wave_amplitude_preservation() {
         let test_cases = vec![
-            (SampleRate::_48000, SampleRate::_44100, "48kHz -> 44.1kHz"),
-            (SampleRate::_44100, SampleRate::_48000, "44.1kHz -> 48kHz"),
-            (SampleRate::_48000, SampleRate::_32000, "48kHz -> 32kHz"),
+            (SampleRate::Hz48000, SampleRate::Hz44100, "48kHz -> 44.1kHz"),
+            (SampleRate::Hz44100, SampleRate::Hz48000, "44.1kHz -> 48kHz"),
+            (SampleRate::Hz48000, SampleRate::Hz32000, "48kHz -> 32kHz"),
         ];
 
         for (input_rate, output_rate, desc) in test_cases {
@@ -372,15 +407,7 @@ mod tests {
 
             let amplitude = 0.5f32;
             let frequency = 1000.0f32;
-            let input_rate_hz = match input_rate {
-                SampleRate::_16000 => 16000.0,
-                SampleRate::_22050 => 22050.0,
-                SampleRate::_32000 => 32000.0,
-                SampleRate::_44100 => 44100.0,
-                SampleRate::_48000 => 48000.0,
-                SampleRate::_96000 => 96000.0,
-                SampleRate::_192000 => 192000.0,
-            };
+            let input_rate_hz = usize::from(input_rate) as f32;
 
             let chunk_size = resampler.chunk_size_input();
 
@@ -397,7 +424,7 @@ mod tests {
             let mut output = vec![0.0f32; resampler.chunk_size_output()];
 
             for _ in 0..5 {
-                let _ = resampler.process_into_buffer(&input, &mut output);
+                let _ = resampler.resample(&input, &mut output);
             }
 
             let delay = resampler.delay();
@@ -419,22 +446,22 @@ mod tests {
 
     #[test]
     fn test_stereo_dc_amplitude_preservation() {
-        let mut resampler = Resampler::<2>::new(SampleRate::_48000, SampleRate::_44100);
+        let mut resampler = Resampler::<2>::new(SampleRate::Hz48000, SampleRate::Hz44100);
 
         let dc_amplitude_left = 0.3f32;
         let dc_amplitude_right = 0.6f32;
         let chunk_size = resampler.chunk_size_input();
 
-        let mut input = vec![0.0f32; chunk_size * 2];
-        for i in 0..chunk_size {
+        let mut input = vec![0.0f32; chunk_size];
+        for i in 0..(chunk_size / 2) {
             input[i * 2] = dc_amplitude_left;
             input[i * 2 + 1] = dc_amplitude_right;
         }
 
-        let mut output = vec![0.0f32; resampler.chunk_size_output() * 2];
+        let mut output = vec![0.0f32; resampler.chunk_size_output()];
 
         for _ in 0..5 {
-            let _ = resampler.process_into_buffer(&input, &mut output);
+            let _ = resampler.resample(&input, &mut output);
         }
 
         let delay = resampler.delay();

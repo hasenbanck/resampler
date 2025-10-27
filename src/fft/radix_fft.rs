@@ -127,10 +127,10 @@ impl<D> RadixFFT<D> {
         let mut temp = index;
 
         // Step 1: Extract digits in forward order.
-        for radix in radices.iter() {
+        radices.iter().for_each(|radix| {
             digits.push(temp % radix.radix());
             temp /= radix.radix();
-        }
+        });
 
         // Step 2: Reconstruct index with reversed digits using reversed radices.
         let mut result = 0;
@@ -234,7 +234,11 @@ impl<D> RadixFFT<D> {
     }
 
     fn twiddle_count(n: usize) -> usize {
-        if n % 4 == 0 { n / 4 } else { n / 4 + 1 }
+        if n.is_multiple_of(4) {
+            n / 4
+        } else {
+            n / 4 + 1
+        }
     }
 
     /// Compute post-processing twiddle factors for N/2 optimization.
@@ -322,7 +326,7 @@ impl<D> RadixFFT<D> {
     ///
     /// # Arguments
     /// * `scratchpad` - Scratch buffer where first n2 elements contain the FFT data,
-    ///                  and remaining elements can be used for temporary storage
+    ///   and remaining elements can be used for temporary storage
     fn process_forward_complex(&self, scratchpad: &mut [Complex32]) {
         debug_assert!(scratchpad.len() >= self.n);
 
@@ -331,7 +335,6 @@ impl<D> RadixFFT<D> {
         // Use pre-computed N/2 factors
         if self.factors.is_empty() {
             // N/2 = 1, no FFT needed
-            return;
         } else if self.factors.len() == 1 {
             // Single factor
             Self::apply_single_butterfly(data, self.factors[0]);
@@ -382,10 +385,11 @@ impl<D> RadixFFT<D> {
             .min(output_right_middle.len())
             .min(self.real_complex_expansion_twiddles.len());
 
-        for i in 0..iter_count {
+        let right_len = output_right_middle.len();
+        for (i, out_left) in output_left_middle.iter_mut().enumerate().take(iter_count) {
             let twiddle = self.real_complex_expansion_twiddles[i];
-            let out = output_left_middle[i];
-            let out_rev_idx = output_right_middle.len() - 1 - i;
+            let out = *out_left;
+            let out_rev_idx = right_len - 1 - i;
             let out_rev = output_right_middle[out_rev_idx];
 
             let sum = out.add(&out_rev);
@@ -405,8 +409,7 @@ impl<D> RadixFFT<D> {
             let real = twiddled_re_sum.im + twiddled_im_diff.re;
             let imaginary = twiddled_im_sum.im - twiddled_re_diff.re;
 
-            output_left_middle[i] =
-                Complex32::new(half_sum_real + real, half_diff_imaginary + imaginary);
+            *out_left = Complex32::new(half_sum_real + real, half_diff_imaginary + imaginary);
             output_right_middle[out_rev_idx] =
                 Complex32::new(half_sum_real - real, imaginary - half_diff_imaginary);
         }
@@ -455,9 +458,8 @@ impl<D> RadixFFT<D> {
             }
 
             // Zero-pad the rest.
-            for i in (available_pairs + (input.len() % 2))..self.n2 {
-                scratchpad[i] = Complex32::new(0.0, 0.0);
-            }
+            let start = available_pairs + (input.len() % 2);
+            scratchpad[start..self.n2].fill(Complex32::new(0.0, 0.0));
         }
 
         self.process_forward_complex(scratchpad);
@@ -503,9 +505,7 @@ impl<D> RadixFFT<D> {
         }
 
         // Zero-pad remaining output if needed.
-        for i in self.n..output.len() {
-            output[i] = 0.0;
-        }
+        output[self.n..].fill(0.0);
     }
 
     /// Pre-process real FFT input to prepare for N/2-point inverse complex FFT.
@@ -535,8 +535,10 @@ impl<D> RadixFFT<D> {
             .min(input_right_middle.len())
             .min(self.complex_real_reduction_twiddles.len());
 
-        for i in 0..iter_count {
-            let twiddle = self.complex_real_reduction_twiddles[i];
+        for (i, &twiddle) in self.complex_real_reduction_twiddles[..iter_count]
+            .iter()
+            .enumerate()
+        {
             let inp = input_left_middle[i];
             let inp_rev_idx = input_right_middle.len() - 1 - i;
             let inp_rev = input_right_middle[inp_rev_idx];
@@ -570,16 +572,16 @@ impl<D> RadixFFT<D> {
     ///
     /// # Arguments
     /// * `scratchpad` - Scratch buffer where first n2 elements contain the FFT data,
-    ///                  and remaining elements can be used for temporary storage
+    ///   and remaining elements can be used for temporary storage
     fn process_inverse_complex(&self, scratchpad: &mut [Complex32]) {
         debug_assert!(scratchpad.len() >= self.n);
 
         let (data, scratch_remainder) = scratchpad.split_at_mut(self.n2);
 
         // Conjugate input
-        for x in data.iter_mut() {
+        data.iter_mut().for_each(|x| {
             x.im = -x.im;
-        }
+        });
 
         // Perform forward FFT (same as forward path) using pre-computed N/2 factors
         if self.factors.is_empty() {
@@ -603,9 +605,9 @@ impl<D> RadixFFT<D> {
         }
 
         // Conjugate output
-        for x in data.iter_mut() {
+        data.iter_mut().for_each(|x| {
             x.im = -x.im;
-        }
+        });
     }
 }
 

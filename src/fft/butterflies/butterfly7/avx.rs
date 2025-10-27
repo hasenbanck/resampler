@@ -4,11 +4,11 @@ use std::arch::x86_64::*;
 use crate::Complex32;
 
 /// AVX implementation: processes 4 columns at once.
-#[cfg(any(all(
+#[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx",
     any(not(target_feature = "fma"), test)
-)))]
+))]
 #[target_feature(enable = "avx")]
 pub(super) unsafe fn butterfly_7_avx(
     data: &mut [Complex32],
