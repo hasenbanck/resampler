@@ -1,4 +1,4 @@
-use crate::{LatencyMode, Radix, SampleRate, SampleRateFamily};
+use crate::{Radix, SampleRate, SampleRateFamily};
 
 /// Configuration for FFT-based resampling between two sample rates.
 ///
@@ -10,14 +10,14 @@ use crate::{LatencyMode, Radix, SampleRate, SampleRateFamily};
 /// - 22.05 kHz family (and all multiples)
 /// - 48 kHz family (and all multiples)
 ///
-/// | Conversion Type              | Input Size | Output Size | Ratio Error | Input FFT           | Output FFT        | Factorization      |
-/// |------------------------------|------------|-------------|-------------|---------------------|-------------------|--------------------|
-/// | Inside same family           | 2          | 2           | 0.0%        | Radix-2             | Radix-2           | 2 → 2              |
-/// | Between 22.05 kHz and 48 kHz | 16         | 35          | 0.4883%     | Radix-2             | Mixed-Radix (5,7) | 2⁴ → 5 × 7         |
-/// | Between 16 kHz and 48 kHz    | 64         | 192         | 0.0%        | Radix-2             | Mixed-Radix (2,3) | 2⁶ → 2⁶ × 3        |
-/// | Between 16 kHz and 44.1 kHz  | 70         | 192         | 0.4859%     | Mixed-Radix (2,5,7) | Mixed-Radix (2,3) | 2 × 5 × 7 → 2⁶ × 3 |
+/// | Conversion Type              | Input Size | Output Size | Ratio Error | Input FFT           | Output FFT          | Factorization            |
+/// |------------------------------|------------|-------------|-------------|---------------------|---------------------|--------------------------|
+/// | Inside same family           | 2          | 2           | 0.0%        | Radix-2             | Radix-2             | 2 → 2                    |
+/// | Between 22.05 kHz and 48 kHz | 588        | 1280        | 0.0%        | Mixed-Radix (3,4,7) | Mixed-Radix (4,5)   | 3 × 4 × 7 × 7 → 4⁴ × 5   |
+/// | Between 16 kHz and 48 kHz    | 64         | 192         | 0.0%        | Radix-2             | Mixed-Radix (2,3)   | 2⁶ → 2⁶ × 3              |
+/// | Between 16 kHz and 44.1 kHz  | 640        | 882         | 0.0%        | Mixed-Radix (2,4,5) | Mixed-Radix (2,3,7) | 2 × 4⁴ × 5 → 2 × 3² × 7² |
 #[derive(Debug, Clone)]
-pub(crate) struct ConversionConfig {
+pub struct ConversionConfig {
     /// Base input FFT size (minimal latency).
     pub(crate) base_fft_size_in: usize,
     /// Base output FFT size (minimal latency).
@@ -30,7 +30,7 @@ pub(crate) struct ConversionConfig {
 
 impl ConversionConfig {
     /// Get the minimal FFT sizes needed for accurate conversion between sample rates.
-    pub(crate) fn from_sample_rates(
+    pub fn from_sample_rates(
         input_rate: SampleRate,
         output_rate: SampleRate,
     ) -> ConversionConfig {
@@ -51,19 +51,41 @@ impl ConversionConfig {
                 base_factors_out: vec![Radix::Factor2],
             },
 
-            // 22.05 kHz → 48 kHz family (2⁴ → 5 × 7)
+            // 22.05 kHz → 48 kHz family (3 × 4 × 7 × 7 → 4⁴ × 5)
             (SampleRateFamily::_22050, SampleRateFamily::_48000) => ConversionConfig {
-                base_fft_size_in: 16,
-                base_fft_size_out: 35,
-                base_factors_in: vec![Radix::Factor2; 4],
-                base_factors_out: vec![Radix::Factor7, Radix::Factor5],
+                base_fft_size_in: 588,
+                base_fft_size_out: 1280,
+                base_factors_in: vec![
+                    Radix::Factor3,
+                    Radix::Factor4,
+                    Radix::Factor7,
+                    Radix::Factor7,
+                ],
+                base_factors_out: vec![
+                    Radix::Factor4,
+                    Radix::Factor4,
+                    Radix::Factor4,
+                    Radix::Factor4,
+                    Radix::Factor5,
+                ],
             },
-            // 48 kHz → 22.05 kHz family (5 × 7 → 2⁴)
+            // 48 kHz → 22.05 kHz family (4⁴ × 5 → 3 × 4 × 7 × 7)
             (SampleRateFamily::_48000, SampleRateFamily::_22050) => ConversionConfig {
-                base_fft_size_in: 35,
-                base_fft_size_out: 16,
-                base_factors_in: vec![Radix::Factor7, Radix::Factor5],
-                base_factors_out: vec![Radix::Factor2; 4],
+                base_fft_size_in: 1280,
+                base_fft_size_out: 588,
+                base_factors_in: vec![
+                    Radix::Factor4,
+                    Radix::Factor4,
+                    Radix::Factor4,
+                    Radix::Factor4,
+                    Radix::Factor5,
+                ],
+                base_factors_out: vec![
+                    Radix::Factor3,
+                    Radix::Factor4,
+                    Radix::Factor7,
+                    Radix::Factor7,
+                ],
             },
 
             // 16 kHz → 48 kHz family (2⁶ → 2⁶ × 3)
@@ -91,29 +113,43 @@ impl ConversionConfig {
                 base_factors_out: vec![Radix::Factor2; 6],
             },
 
-            // 16 kHz → 22.05 kHz family (2 × 5 × 7 → 2⁶ × 3)
+            // 16 kHz → 22.05 kHz family (2 × 4⁴ × 5 → 2 × 3² × 7²)
             (SampleRateFamily::_16000, SampleRateFamily::_22050) => ConversionConfig {
-                base_fft_size_in: 70,
-                base_fft_size_out: 192,
-                base_factors_in: vec![Radix::Factor7, Radix::Factor5, Radix::Factor2],
+                base_fft_size_in: 640,
+                base_fft_size_out: 882,
+                base_factors_in: vec![
+                    Radix::Factor2,
+                    Radix::Factor4,
+                    Radix::Factor4,
+                    Radix::Factor4,
+                    Radix::Factor5,
+                ],
                 base_factors_out: vec![
+                    Radix::Factor2,
                     Radix::Factor3,
-                    Radix::Factor4,
-                    Radix::Factor4,
-                    Radix::Factor4,
+                    Radix::Factor3,
+                    Radix::Factor7,
+                    Radix::Factor7,
                 ],
             },
-            // 22.05 kHz → 16 kHz family (2⁶ × 3 → 2 × 5 × 7)
+            // 22.05 kHz → 16 kHz family (2 × 3² × 7² → 2 × 4⁴ × 5)
             (SampleRateFamily::_22050, SampleRateFamily::_16000) => ConversionConfig {
-                base_fft_size_in: 192,
-                base_fft_size_out: 70,
+                base_fft_size_in: 882,
+                base_fft_size_out: 640,
                 base_factors_in: vec![
+                    Radix::Factor2,
                     Radix::Factor3,
-                    Radix::Factor4,
-                    Radix::Factor4,
-                    Radix::Factor4,
+                    Radix::Factor3,
+                    Radix::Factor7,
+                    Radix::Factor7,
                 ],
-                base_factors_out: vec![Radix::Factor7, Radix::Factor5, Radix::Factor2],
+                base_factors_out: vec![
+                    Radix::Factor2,
+                    Radix::Factor4,
+                    Radix::Factor4,
+                    Radix::Factor4,
+                    Radix::Factor5,
+                ],
             },
         };
 
@@ -177,20 +213,14 @@ impl ConversionConfig {
         }
     }
 
-    /// Scale the base FFT sizes according to the latency mode.
+    /// Scale the base FFT sizes to ensure a minimum of 512 input samples.
     ///
     /// Returns: (input_size, input_factors, output_size, output_factors)
-    pub(crate) fn scale_for_latency(
-        &self,
-        latency_mode: LatencyMode,
-    ) -> (usize, Vec<Radix>, usize, Vec<Radix>) {
-        let target_input_samples = match latency_mode {
-            LatencyMode::LatencyOptimized => 256,
-            LatencyMode::ThroughputOptimized => 512,
-        };
+    pub fn scale_for_throughput(&self) -> (usize, Vec<Radix>, usize, Vec<Radix>) {
+        const TARGET_INPUT_SAMPLES: usize = 512;
 
         // Calculate the multiplier needed to reach target input samples.
-        let multiplier = (target_input_samples as f32 / self.base_fft_size_in as f32)
+        let multiplier = (TARGET_INPUT_SAMPLES as f32 / self.base_fft_size_in as f32)
             .ceil()
             .max(1.0) as usize;
 
@@ -245,8 +275,8 @@ mod tests {
     #[test]
     fn test_conversion_config_22050_to_48000() {
         let config = ConversionConfig::from_sample_rates(SampleRate::_22050, SampleRate::_48000);
-        assert_eq!(config.base_fft_size_in, 16);
-        assert_eq!(config.base_fft_size_out, 35);
+        assert_eq!(config.base_fft_size_in, 588);
+        assert_eq!(config.base_fft_size_out, 1280);
     }
 
     #[test]
@@ -259,36 +289,67 @@ mod tests {
     #[test]
     fn test_conversion_config_16000_to_44100() {
         let config = ConversionConfig::from_sample_rates(SampleRate::_16000, SampleRate::_44100);
-        assert_eq!(config.base_fft_size_in, 70);
-        assert_eq!(config.base_fft_size_out, 384);
+        assert_eq!(config.base_fft_size_in, 640);
+        assert_eq!(config.base_fft_size_out, 1764);
     }
 
     #[test]
     fn test_conversion_config_44100_to_48000() {
         let config = ConversionConfig::from_sample_rates(SampleRate::_44100, SampleRate::_48000);
-        assert_eq!(config.base_fft_size_in, 32);
-        assert_eq!(config.base_fft_size_out, 35);
+        assert_eq!(config.base_fft_size_in, 1176);
+        assert_eq!(config.base_fft_size_out, 1280);
 
-        assert_eq!(config.base_factors_in, vec![Radix::Factor2; 5]);
+        assert_eq!(
+            config.base_factors_in,
+            vec![
+                Radix::Factor3,
+                Radix::Factor4,
+                Radix::Factor7,
+                Radix::Factor7,
+                Radix::Factor2
+            ]
+        );
 
         assert_eq!(
             config.base_factors_out,
-            vec![Radix::Factor7, Radix::Factor5]
+            vec![
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor5
+            ]
         );
     }
 
     #[test]
     fn test_conversion_config_44100_to_96000() {
         let config = ConversionConfig::from_sample_rates(SampleRate::_44100, SampleRate::_96000);
-        assert_eq!(config.base_fft_size_in, 32);
-        assert_eq!(config.base_fft_size_out, 70);
+        assert_eq!(config.base_fft_size_in, 1176);
+        assert_eq!(config.base_fft_size_out, 2560);
 
-        assert_eq!(config.base_factors_in, vec![Radix::Factor2; 5]);
+        assert_eq!(
+            config.base_factors_in,
+            vec![
+                Radix::Factor3,
+                Radix::Factor4,
+                Radix::Factor7,
+                Radix::Factor7,
+                Radix::Factor2
+            ]
+        );
 
-        // Output: base [Factor7, Factor5] + multiplier [Factor2] = [Factor7, Factor5, Factor2]
+        // Output: base [Factor4, Factor4, Factor4, Factor4, Factor5] + multiplier [Factor2]
         assert_eq!(
             config.base_factors_out,
-            vec![Radix::Factor7, Radix::Factor5, Radix::Factor2]
+            vec![
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor5,
+                Radix::Factor2
+            ]
         );
     }
 
@@ -299,102 +360,95 @@ mod tests {
         // - Mixed-radix bases use Factor4 for multipliers (when possible)
 
         let config = ConversionConfig {
-            base_fft_size_in: 16,
-            base_fft_size_out: 35,
-            base_factors_in: vec![Radix::Factor2; 4],
-            base_factors_out: vec![Radix::Factor7, Radix::Factor5],
+            base_fft_size_in: 588,
+            base_fft_size_out: 1280,
+            base_factors_in: vec![
+                Radix::Factor3,
+                Radix::Factor4,
+                Radix::Factor7,
+                Radix::Factor7,
+            ],
+            base_factors_out: vec![
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor5,
+            ],
         };
 
-        let (_, factors_in, _, factors_out) =
-            config.scale_for_latency(LatencyMode::LatencyOptimized);
+        let (size_in, factors_in, size_out, factors_out) = config.scale_for_throughput();
 
-        assert_eq!(factors_in[0..2], [Radix::Factor2, Radix::Factor2]);
+        // Base is 588, target is 512, so multiplier = 1 (no scaling needed)
+        assert_eq!(size_in, 588);
+        assert_eq!(size_out, 1280);
 
-        // Output is mixed-radix base → should use Factor4 for multiplier
-        // Base [Factor7, Factor5] + multiplier [Factor4] = [Factor7, Factor5, Factor4]
-        assert_eq!(factors_out[0], Radix::Factor7);
-        assert_eq!(factors_out[1], Radix::Factor5);
-        assert_eq!(factors_out[2], Radix::Factor4);
+        // No scaling factors added, just the base factors
+        assert_eq!(
+            factors_in,
+            vec![
+                Radix::Factor3,
+                Radix::Factor4,
+                Radix::Factor7,
+                Radix::Factor7
+            ]
+        );
+        assert_eq!(
+            factors_out,
+            vec![
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor5
+            ]
+        );
     }
 
     #[test]
-    fn test_latency_scaling() {
+    fn test_throughput_scaling() {
         let config = ConversionConfig {
-            base_fft_size_in: 16,
-            base_fft_size_out: 35,
-            base_factors_in: vec![Radix::Factor2; 4],
-            base_factors_out: vec![Radix::Factor7, Radix::Factor5],
+            base_fft_size_in: 588,
+            base_fft_size_out: 1280,
+            base_factors_in: vec![
+                Radix::Factor3,
+                Radix::Factor4,
+                Radix::Factor7,
+                Radix::Factor7,
+            ],
+            base_factors_out: vec![
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor5,
+            ],
         };
 
-        // LatencyOptimized: target ~256 samples -> 16x multiplier
-        let (input, factors_in, output, factors_out) =
-            config.scale_for_latency(LatencyMode::LatencyOptimized);
-        assert_eq!(input, 256);
-        assert_eq!(output, 560);
+        // Target is 512 samples, but base is 588, so multiplier = 1 (no scaling)
+        let (input, factors_in, output, factors_out) = config.scale_for_throughput();
+        assert_eq!(input, 588);
+        assert_eq!(output, 1280);
 
-        // 256 = 16 × 16, multiplier is 16 = 2^4
-
-        // Base is power-of-2 (16), so use only Factor2: [Factor2; 4] + [Factor2; 4]
+        // No scaling factors added, just the base factors
         assert_eq!(
             factors_in,
             vec![
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2
+                Radix::Factor3,
+                Radix::Factor4,
+                Radix::Factor7,
+                Radix::Factor7
             ]
         );
 
-        // 560 = 16 × 35, multiplier is 16, output is not power-of-2, so use Factor4: 16 = 4×4
-        // Base [Factor7, Factor5] + multiplier [Factor4, Factor4] = [Factor7, Factor5, Factor4, Factor4]
         assert_eq!(
             factors_out,
             vec![
-                Radix::Factor7,
-                Radix::Factor5,
-                Radix::Factor4,
-                Radix::Factor4
-            ]
-        );
-
-        // ThroughputOptimized: target ~512 samples -> 32x multiplier
-        let (input, factors_in, output, factors_out) =
-            config.scale_for_latency(LatencyMode::ThroughputOptimized);
-        assert_eq!(input, 512);
-        assert_eq!(output, 1120);
-
-        // 512 = 32 × 16, multiplier is 32 = 2^5
-
-        // Base is power-of-2 (16), so use only Factor2: [Factor2; 4] + [Factor2; 5]
-        assert_eq!(
-            factors_in,
-            vec![
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2,
-                Radix::Factor2
-            ]
-        );
-
-        // Output is not power-of-2, so use Factor4: 32 = 4×4×2
-        // Base [Factor7, Factor5] + multiplier [Factor4, Factor4, Factor2] = [Factor7, Factor5, Factor4, Factor4, Factor2]
-        assert_eq!(
-            factors_out,
-            vec![
-                Radix::Factor7,
-                Radix::Factor5,
                 Radix::Factor4,
                 Radix::Factor4,
-                Radix::Factor2
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor5
             ]
         );
     }

@@ -5,17 +5,16 @@ use std::{
 };
 
 use crate::{
-    Complex32, Forward, Inverse, LatencyMode, Radix, RadixFFT, SampleRate,
+    Complex32, Forward, Inverse, Radix, RadixFFT, SampleRate,
     error::ResampleError,
     planner::ConversionConfig,
-    window::{calculate_cutoff_kaiser, make_kaiser_window, make_sincs_for_kaiser},
+    window::{calculate_cutoff_kaiser, make_sincs_for_kaiser},
 };
 
 const KAISER_BETA: f64 = 10.0;
 
 pub(crate) struct FftCacheData {
     filter_spectrum: Arc<[Complex32]>,
-    input_window: Arc<[f32]>,
     fft: Arc<RadixFFT<Forward>>,
     ifft: Arc<RadixFFT<Inverse>>,
 }
@@ -24,7 +23,6 @@ impl Clone for FftCacheData {
     fn clone(&self) -> Self {
         Self {
             filter_spectrum: Arc::clone(&self.filter_spectrum),
-            input_window: Arc::clone(&self.input_window),
             fft: Arc::clone(&self.fft),
             ifft: Arc::clone(&self.ifft),
         }
@@ -52,17 +50,12 @@ impl<const CHANNEL: usize> Resampler<CHANNEL> {
     /// Parameters are:
     /// - `sample_rate_input`: Input sample rate.
     /// - `sample_rate_output`: Output sample rate.
-    /// - `latency_mode`: Latency mode this resampler works in.
-    pub fn new(
-        sample_rate_input: SampleRate,
-        sample_rate_output: SampleRate,
-        latency_mode: LatencyMode,
-    ) -> Self {
+    pub fn new(sample_rate_input: SampleRate, sample_rate_output: SampleRate) -> Self {
         // Get the optimized FFT sizes and factors directly from the conversion table.
         // These sizes are carefully chosen for efficient factorization and minimal latency.
         let config = ConversionConfig::from_sample_rates(sample_rate_input, sample_rate_output);
         let (fft_size_input, factors_in, fft_size_output, factors_out) =
-            config.scale_for_latency(latency_mode);
+            config.scale_for_throughput();
 
         let overlaps: [Vec<f32>; CHANNEL] = array::from_fn(|_| vec![0.0; fft_size_output]);
 
@@ -173,7 +166,6 @@ impl<const CHANNEL: usize> Resampler<CHANNEL> {
 struct FftResampler {
     fft_size_input: usize,
     fft_size_output: usize,
-    input_window: Arc<[f32]>,
     fft: Arc<RadixFFT<Forward>>,
     ifft: Arc<RadixFFT<Inverse>>,
     scratchpad_forward: Vec<Complex32>,
@@ -210,7 +202,6 @@ impl FftResampler {
         FftResampler {
             fft_size_input,
             fft_size_output,
-            input_window: cached.input_window,
             fft: cached.fft,
             ifft: cached.ifft,
             scratchpad_forward,
@@ -251,7 +242,6 @@ impl FftResampler {
                     false => calculate_cutoff_kaiser(fft_size_input, KAISER_BETA),
                 };
 
-                // TODO: Make the Kaiser's beta configurable. For this we need to make the cutoff calculatable.
                 let sincs = make_sincs_for_kaiser(fft_size_input, 1, cutoff as f32, KAISER_BETA);
                 let mut filter_time = vec![0.0; 2 * fft_size_input];
                 let mut filter_spectrum = vec![Complex32::zero(); fft_size_input + 1];
@@ -262,13 +252,10 @@ impl FftResampler {
                 }
 
                 let mut scratchpad = vec![Complex32::zero(); fft.scratchpad_size()];
-                fft.process(&mut filter_time, &mut filter_spectrum, &mut scratchpad);
-
-                let input_window = make_kaiser_window(fft_size_input, KAISER_BETA);
+                fft.process(&filter_time, &mut filter_spectrum, &mut scratchpad);
 
                 FftCacheData {
                     filter_spectrum: filter_spectrum.into(),
-                    input_window: input_window.into(),
                     fft: Arc::new(fft),
                     ifft: Arc::new(ifft),
                 }
@@ -277,27 +264,16 @@ impl FftResampler {
     }
 
     fn resample(&mut self, wave_input: &[f32], wave_output: &mut [f32], overlap: &mut [f32]) {
-        // TODO The frequency graph shows that we seem to change the volume on some ratios.
-
-        // Apply input window for proper overlap-add reconstruction.
-        for (index, (input_sample, window_value)) in
-            wave_input.iter().zip(self.input_window.iter()).enumerate()
-        {
-            self.input_buffer[index] = input_sample * window_value;
-        }
-
-        // Zero-pad the second half of the buffer.
-        for item in self
-            .input_buffer
+        // Copy input and clear padding.
+        self.input_buffer[..self.fft_size_input].copy_from_slice(wave_input);
+        self.input_buffer
             .iter_mut()
             .skip(self.fft_size_input)
             .take(self.fft_size_input)
-        {
-            *item = 0.0;
-        }
+            .for_each(|x| *x = 0.0);
 
         self.fft.process(
-            &mut self.input_buffer,
+            &self.input_buffer,
             &mut self.input_spectrum,
             &mut self.scratchpad_forward,
         );
@@ -311,15 +287,15 @@ impl FftResampler {
             .iter_mut()
             .take(new_length)
             .zip(self.filter_spectrum.iter())
-            .for_each(|(spec, filter)| *spec = spec.mul(filter));
+            .for_each(|(spectrum, filter)| *spectrum = spectrum.mul(filter));
 
         self.output_spectrum[0..new_length].copy_from_slice(&self.input_spectrum[0..new_length]);
-        for value in self.output_spectrum[new_length..].iter_mut() {
-            *value = Complex32::zero();
-        }
+        self.output_spectrum[new_length..].iter_mut().for_each(|x| {
+            *x = Complex32::zero();
+        });
 
         self.ifft.process(
-            &mut self.output_spectrum,
+            &self.output_spectrum,
             &mut self.output_buffer,
             &mut self.scratchpad_inverse,
         );
@@ -332,5 +308,154 @@ impl FftResampler {
             *item = self.output_buffer[index] + overlap[index];
         }
         overlap.copy_from_slice(&self.output_buffer[self.fft_size_output..]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    const EPSILON: f32 = 0.02;
+
+    fn approx_eq(a: f32, b: f32, epsilon: f32) -> bool {
+        (a - b).abs() < epsilon
+    }
+
+    #[test]
+    fn test_dc_signal_amplitude_preservation() {
+        let test_cases = vec![
+            (SampleRate::_48000, SampleRate::_44100, "48kHz -> 44.1kHz"),
+            (SampleRate::_44100, SampleRate::_48000, "44.1kHz -> 48kHz"),
+            (SampleRate::_48000, SampleRate::_32000, "48kHz -> 32kHz"),
+            (SampleRate::_32000, SampleRate::_48000, "32kHz -> 48kHz"),
+            (SampleRate::_96000, SampleRate::_48000, "96kHz -> 48kHz"),
+            (SampleRate::_48000, SampleRate::_96000, "48kHz -> 96kHz"),
+        ];
+
+        for (input_rate, output_rate, desc) in test_cases {
+            let mut resampler = Resampler::<1>::new(input_rate, output_rate);
+
+            let dc_amplitude = 0.5f32;
+            let input = vec![dc_amplitude; resampler.chunk_size_input()];
+            let mut output = vec![0.0f32; resampler.chunk_size_output()];
+
+            for _ in 0..5 {
+                let _ = resampler.process_into_buffer(&input, &mut output);
+            }
+
+            let delay = resampler.delay();
+            let check_start = delay.min(output.len() / 4);
+            let check_end = output.len() * 3 / 4;
+
+            for (i, &sample) in output[check_start..check_end].iter().enumerate() {
+                assert!(
+                    approx_eq(sample, dc_amplitude, EPSILON),
+                    "{desc}: DC amplitude not preserved at sample {}: expected {dc_amplitude}, got {sample} (error: {:.2}%)",
+                    i + check_start,
+                    ((sample - dc_amplitude) / dc_amplitude * 100.0).abs()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_sine_wave_amplitude_preservation() {
+        let test_cases = vec![
+            (SampleRate::_48000, SampleRate::_44100, "48kHz -> 44.1kHz"),
+            (SampleRate::_44100, SampleRate::_48000, "44.1kHz -> 48kHz"),
+            (SampleRate::_48000, SampleRate::_32000, "48kHz -> 32kHz"),
+        ];
+
+        for (input_rate, output_rate, desc) in test_cases {
+            let mut resampler = Resampler::<1>::new(input_rate, output_rate);
+
+            let amplitude = 0.5f32;
+            let frequency = 1000.0f32;
+            let input_rate_hz = match input_rate {
+                SampleRate::_16000 => 16000.0,
+                SampleRate::_22050 => 22050.0,
+                SampleRate::_32000 => 32000.0,
+                SampleRate::_44100 => 44100.0,
+                SampleRate::_48000 => 48000.0,
+                SampleRate::_96000 => 96000.0,
+                SampleRate::_192000 => 192000.0,
+            };
+
+            let chunk_size = resampler.chunk_size_input();
+
+            let mut phase = 0.0f32;
+            let phase_increment = 2.0 * PI * frequency / input_rate_hz;
+            let input: Vec<f32> = (0..chunk_size)
+                .map(|_| {
+                    let sample = amplitude * phase.sin();
+                    phase += phase_increment;
+                    sample
+                })
+                .collect();
+
+            let mut output = vec![0.0f32; resampler.chunk_size_output()];
+
+            for _ in 0..5 {
+                let _ = resampler.process_into_buffer(&input, &mut output);
+            }
+
+            let delay = resampler.delay();
+            let check_start = delay.min(output.len() / 4);
+            let check_end = output.len() * 3 / 4;
+
+            let peak = output[check_start..check_end]
+                .iter()
+                .map(|&x| x.abs())
+                .fold(0.0f32, f32::max);
+
+            assert!(
+                approx_eq(peak, amplitude, EPSILON),
+                "{desc}: Sine wave amplitude not preserved: expected {amplitude}, got {peak} (error: {:.2}%)",
+                ((peak - amplitude) / amplitude * 100.0).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn test_stereo_dc_amplitude_preservation() {
+        let mut resampler = Resampler::<2>::new(SampleRate::_48000, SampleRate::_44100);
+
+        let dc_amplitude_left = 0.3f32;
+        let dc_amplitude_right = 0.6f32;
+        let chunk_size = resampler.chunk_size_input();
+
+        let mut input = vec![0.0f32; chunk_size * 2];
+        for i in 0..chunk_size {
+            input[i * 2] = dc_amplitude_left;
+            input[i * 2 + 1] = dc_amplitude_right;
+        }
+
+        let mut output = vec![0.0f32; resampler.chunk_size_output() * 2];
+
+        for _ in 0..5 {
+            let _ = resampler.process_into_buffer(&input, &mut output);
+        }
+
+        let delay = resampler.delay();
+        let check_start = delay.min(output.len() / 8) * 2;
+        let check_end = output.len() * 3 / 4;
+
+        for i in (check_start..check_end).step_by(2) {
+            let left_sample = output[i];
+            let right_sample = output[i + 1];
+
+            assert!(
+                approx_eq(left_sample, dc_amplitude_left, EPSILON),
+                "Stereo left channel DC not preserved at frame {}: expected {dc_amplitude_left}, got {left_sample}",
+                i / 2
+            );
+
+            assert!(
+                approx_eq(right_sample, dc_amplitude_right, EPSILON),
+                "Stereo right channel DC not preserved at frame {}: expected {dc_amplitude_right}, got {right_sample}",
+                i / 2
+            );
+        }
     }
 }

@@ -1,7 +1,7 @@
 use std::{env, time::Instant};
 
 use hound::{WavReader, WavWriter};
-use rsampler::{LatencyMode, Resampler, SampleRate};
+use rsampler::{Resampler, SampleRate};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -101,8 +101,7 @@ fn main() {
 
     let input_size_mib = (stereo_samples.len() * size_of::<f32>()) as f64 / (1024.0 * 1024.0);
 
-    let mut resampler =
-        Resampler::<2>::new(input_rate, output_rate, LatencyMode::ThroughputOptimized);
+    let mut resampler = Resampler::<2>::new(input_rate, output_rate);
 
     let start = Instant::now();
     let resampled_samples = resample_batch(&mut resampler, &stereo_samples);

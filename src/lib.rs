@@ -1,21 +1,12 @@
 mod error;
 mod fft;
-mod planner;
+pub mod planner;
 mod resampler;
 mod window;
 
 pub use error::ResampleError;
 pub use fft::*;
 pub use resampler::*;
-
-/// Mode the resampler will operate in.
-#[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Ord, Eq, Hash)]
-pub enum LatencyMode {
-    /// Better latency but worse throughput.
-    LatencyOptimized,
-    /// Better throughput but worse latency.
-    ThroughputOptimized,
-}
 
 /// All sample rates the resampler can operate on.
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Ord, Eq, Hash)]

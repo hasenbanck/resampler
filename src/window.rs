@@ -41,7 +41,7 @@ pub(crate) fn make_sincs_for_kaiser(
 /// The Kaiser window is a near-optimal window function that provides a good trade-off
 /// between main lobe width and side lobe attenuation. It is computed using the modified
 /// Bessel function of the first kind, order zero (I₀).
-pub(crate) fn make_kaiser_window(sample_count: usize, beta: f64) -> Vec<f32> {
+fn make_kaiser_window(sample_count: usize, beta: f64) -> Vec<f32> {
     let mut window = Vec::with_capacity(sample_count);
 
     let window_half_length = sample_count as f64 / 2.0;
