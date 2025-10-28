@@ -1,3 +1,6 @@
+use alloc::{vec, vec::Vec};
+use core::{f64, marker::PhantomData, slice};
+
 use super::butterflies::{
     butterfly_2, butterfly_3, butterfly_4, butterfly_5, butterfly_7, cooley_tukey_radix_2,
     cooley_tukey_radix_n,
@@ -61,7 +64,7 @@ pub struct RadixFFT<D> {
     real_complex_expansion_twiddles: Vec<Complex32>,
     complex_real_reduction_twiddles: Vec<Complex32>,
     is_pure_radix2: bool,
-    _direction: std::marker::PhantomData<D>,
+    _direction: PhantomData<D>,
 }
 
 impl<D> RadixFFT<D> {
@@ -117,7 +120,7 @@ impl<D> RadixFFT<D> {
             real_complex_expansion_twiddles,
             complex_real_reduction_twiddles,
             is_pure_radix2,
-            _direction: std::marker::PhantomData,
+            _direction: PhantomData,
         }
     }
 
@@ -180,9 +183,12 @@ impl<D> RadixFFT<D> {
     /// This reduces accumulated floating-point error for large FFTs.
     #[inline(always)]
     fn compute_twiddle_f32(index: usize, fft_len: usize) -> Complex32 {
-        let constant = -2.0 * std::f64::consts::PI / fft_len as f64;
+        let constant = -2.0 * f64::consts::PI / fft_len as f64;
         let angle = constant * index as f64;
-        Complex32::new(angle.cos() as f32, angle.sin() as f32)
+        #[cfg(not(feature = "no_std"))]
+        return Complex32::new(angle.cos() as f32, angle.sin() as f32);
+        #[cfg(feature = "no_std")]
+        return Complex32::new(libm::cos(angle) as f32, libm::sin(angle) as f32);
     }
 
     /// Compute twiddle factors for Cooley-Tukey radix-2 FFT.
@@ -440,7 +446,7 @@ impl<D> RadixFFT<D> {
         if input.len() >= self.n {
             let buf_in = unsafe {
                 let ptr = input.as_ptr() as *const Complex32;
-                std::slice::from_raw_parts(ptr, self.n2)
+                slice::from_raw_parts(ptr, self.n2)
             };
             scratchpad[..self.n2].copy_from_slice(buf_in);
         } else {
@@ -448,7 +454,7 @@ impl<D> RadixFFT<D> {
             if available_pairs > 0 {
                 unsafe {
                     let ptr = input.as_ptr() as *const Complex32;
-                    let buf_in = std::slice::from_raw_parts(ptr, available_pairs);
+                    let buf_in = slice::from_raw_parts(ptr, available_pairs);
                     scratchpad[..available_pairs].copy_from_slice(buf_in);
                 }
             }
@@ -490,7 +496,7 @@ impl<D> RadixFFT<D> {
         if output.len() >= self.n {
             let buf_out = unsafe {
                 let ptr = output.as_mut_ptr() as *mut Complex32;
-                std::slice::from_raw_parts_mut(ptr, self.n2)
+                slice::from_raw_parts_mut(ptr, self.n2)
             };
             buf_out.copy_from_slice(&scratchpad[..self.n2]);
         } else {

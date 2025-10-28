@@ -36,10 +36,14 @@ jobs:
           toolchain: ${{matrix.toolchain}}
           target: ${{matrix.target}}
       - uses: actions/checkout@v5
-      - name: Build
+      - name: Build (not default features)
+        run: cargo build --workspace --release --no-default-features
+      - name: Build (default)
+        run: cargo build --workspace --release
+      - name: Build (all features)
         run: cargo build --workspace --release --all-features
       - name: Run tests
-        run: cargo test --workspace --release --all-features
+        run: cargo test --workspace --release
 
   build-wasm:
     runs-on: ${{matrix.os}}

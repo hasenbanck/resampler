@@ -2,14 +2,20 @@
 name = "resampler"
 description = "A small FFT based audio resampling library"
 authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0 OR MIT"
 documentation = "https://docs.rs/resampler"
 repository = "https://github.com/hasenbanck/resampler"
+categories = ["multimedia::audio", "algorithms", "no-std"]
+keywords = ["audio", "resampling", "sample-rate", "fft", "dsp"]
+
+[features]
+no_std = ["libm"]
 
 [dependencies]
+libm = { version = "0.2", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }

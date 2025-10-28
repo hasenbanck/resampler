@@ -1,3 +1,5 @@
+use alloc::{vec, vec::Vec};
+
 use crate::{Radix, SampleRate, SampleRateFamily};
 
 /// Configuration for FFT-based resampling between two sample rates.
@@ -220,8 +222,12 @@ impl ConversionConfig {
         const TARGET_INPUT_SAMPLES: usize = 512;
 
         // Calculate the multiplier needed to reach target input samples.
+        #[cfg(not(feature = "no_std"))]
         let multiplier = (TARGET_INPUT_SAMPLES as f32 / self.base_fft_size_in as f32)
             .ceil()
+            .max(1.0) as usize;
+        #[cfg(feature = "no_std")]
+        let multiplier = libm::ceilf(TARGET_INPUT_SAMPLES as f32 / self.base_fft_size_in as f32)
             .max(1.0) as usize;
 
         // Round multiplier to nearest power of 2.

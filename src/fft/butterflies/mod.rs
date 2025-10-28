@@ -16,6 +16,9 @@ pub(crate) use crate::fft::{
 
 #[cfg(test)]
 mod test_helpers {
+    use alloc::{format, vec};
+    use core::f32;
+
     use crate::Complex32;
 
     /// Helper function to check if two complex numbers are approximately equal
@@ -79,15 +82,22 @@ mod test_helpers {
             let mut simd_data = vec![Complex32::zero(); radix * num_columns];
 
             for i in 0..scalar_data.len() {
+                #[cfg(not(feature = "no_std"))]
                 let val = Complex32::new((i as f32 * 0.5).sin(), (i as f32 * 0.3).cos());
+                #[cfg(feature = "no_std")]
+                let val = Complex32::new(libm::sinf(i as f32 * 0.5), libm::cosf(i as f32 * 0.3));
                 scalar_data[i] = val;
                 simd_data[i] = val;
             }
 
             let mut twiddles = vec![Complex32::zero(); num_columns * twiddles_per_column];
             for i in 0..twiddles.len() {
-                let angle = 2.0 * std::f32::consts::PI * (i as f32) / (num_columns as f32);
-                twiddles[i] = Complex32::new(angle.cos(), angle.sin());
+                let angle = 2.0 * f32::consts::PI * (i as f32) / (num_columns as f32);
+                #[cfg(not(feature = "no_std"))]
+                let tw = Complex32::new(angle.cos(), angle.sin());
+                #[cfg(feature = "no_std")]
+                let tw = Complex32::new(libm::cosf(angle), libm::sinf(angle));
+                twiddles[i] = tw;
             }
 
             scalar_fn(&mut scalar_data, &twiddles, num_columns);

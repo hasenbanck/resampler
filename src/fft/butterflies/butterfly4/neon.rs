@@ -1,5 +1,5 @@
 #[cfg(target_arch = "aarch64")]
-use std::arch::aarch64::*;
+use core::arch::aarch64::*;
 
 use crate::Complex32;
 /// NEON implementation: processes 2 columns at once using vld1q/vst1q.
