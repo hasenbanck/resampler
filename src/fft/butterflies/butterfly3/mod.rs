@@ -1,10 +1,10 @@
 use crate::Complex32;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
 mod avx;
 #[cfg(target_arch = "aarch64")]
 mod neon;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
 mod sse;
 
 #[cfg(all(

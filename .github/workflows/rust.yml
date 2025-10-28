@@ -40,10 +40,12 @@ jobs:
         run: cargo build --workspace --release --no-default-features
       - name: Build (default)
         run: cargo build --workspace --release
+      - name: Run tests (default)
+        run: cargo test --workspace
       - name: Build (all features)
         run: cargo build --workspace --release --all-features
-      - name: Run tests
-        run: cargo test --workspace --release
+      - name: Run tests (all features)
+        run: cargo test --workspace --all-features
 
   build-wasm:
     runs-on: ${{matrix.os}}

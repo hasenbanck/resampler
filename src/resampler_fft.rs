@@ -9,8 +9,8 @@ use std::{
 use crate::{
     Complex32, Forward, Inverse, Radix, RadixFFT, SampleRate,
     error::ResampleError,
-    planner::ConversionConfig,
-    window::{calculate_cutoff_kaiser, make_sincs_for_kaiser},
+    fft::planner::ConversionConfig,
+    window::{WindowType, calculate_cutoff_kaiser, make_sincs_for_kaiser},
 };
 
 const KAISER_BETA: f64 = 10.0;
@@ -32,15 +32,15 @@ impl Clone for FftCacheData {
 }
 
 #[cfg(not(feature = "no_std"))]
-static FFT_CACHE: LazyLock<Mutex<HashMap<(usize, usize), FftCacheData>>> =
+static FFT_CACHE: LazyLock<Mutex<HashMap<u64, FftCacheData>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// High-quality and high-performance FFT-based audio resampler supporting multi-channel audio.
 ///
-/// `Resampler` uses the overlap-add FFT method with Kaiser windowing to convert audio
+/// `ResamplerFft` uses the overlap-add FFT method with Kaiser windowing to convert audio
 /// between different sample rates. The const generic parameter `CHANNEL` specifies the
 /// number of audio channels (e.g., 1 for mono, 2 for stereo).
-pub struct Resampler<const CHANNEL: usize> {
+pub struct ResamplerFft<const CHANNEL: usize> {
     fft_resampler: FftResampler,
     chunk_size_input: usize,
     chunk_size_output: usize,
@@ -52,8 +52,8 @@ pub struct Resampler<const CHANNEL: usize> {
     output_scratch: [Vec<f32>; CHANNEL],
 }
 
-impl<const CHANNEL: usize> Resampler<CHANNEL> {
-    /// Create a new [`Resampler`].
+impl<const CHANNEL: usize> ResamplerFft<CHANNEL> {
+    /// Create a new [`ResamplerFft`].
     ///
     /// Parameters are:
     /// - `sample_rate_input`: Input sample rate.
@@ -71,18 +71,24 @@ impl<const CHANNEL: usize> Resampler<CHANNEL> {
         let chunk_size_output = fft_size_output * CHANNEL;
 
         let needed_input_buffer_size = chunk_size_input + fft_size_input;
-        let needed_output_buffer_size = chunk_size_output + fft_size_output;
+        let needed_buffer_size_output = chunk_size_output + fft_size_output;
         let input_scratch: [Vec<f32>; CHANNEL] =
             array::from_fn(|_| vec![0.0; needed_input_buffer_size]);
         let output_scratch: [Vec<f32>; CHANNEL] =
-            array::from_fn(|_| vec![0.0; needed_output_buffer_size]);
+            array::from_fn(|_| vec![0.0; needed_buffer_size_output]);
 
         let saved_frames = 0;
 
-        let fft_resampler =
-            FftResampler::new(fft_size_input, factors_in, fft_size_output, factors_out);
+        let fft_resampler = FftResampler::new(
+            u32::from(sample_rate_input),
+            u32::from(sample_rate_output),
+            fft_size_input,
+            factors_in,
+            fft_size_output,
+            factors_out,
+        );
 
-        Resampler {
+        ResamplerFft {
             chunk_size_input,
             chunk_size_output,
             fft_size_input,
@@ -132,9 +138,9 @@ impl<const CHANNEL: usize> Resampler<CHANNEL> {
     /// ## Example
     ///
     /// ```rust
-    /// use resampler::{Resampler, SampleRate};
+    /// use resampler::{ResamplerFft, SampleRate};
     ///
-    /// let mut resampler = Resampler::<1>::new(SampleRate::Hz48000, SampleRate::Hz44100);
+    /// let mut resampler = ResamplerFft::<1>::new(SampleRate::Hz48000, SampleRate::Hz44100);
     ///
     /// let input = vec![0.0f32; resampler.chunk_size_input()];
     /// let mut output = vec![0.0f32; resampler.chunk_size_output()];
@@ -151,11 +157,11 @@ impl<const CHANNEL: usize> Resampler<CHANNEL> {
         let min_output_len = self.chunk_size_output;
 
         if input.len() < expected_input_len {
-            return Err(ResampleError::InputBufferSize);
+            return Err(ResampleError::InvalidInputBufferSize);
         }
 
         if output.len() < min_output_len {
-            return Err(ResampleError::OutputBufferSize);
+            return Err(ResampleError::InvalidOutputBufferSize);
         }
 
         // Deinterleave input into per-channel scratch buffers.
@@ -216,12 +222,16 @@ struct FftResampler {
 
 impl FftResampler {
     pub(crate) fn new(
+        sample_rate_input: u32,
+        sample_rate_output: u32,
         fft_size_input: usize,
         factors_input: Vec<Radix>,
         fft_size_output: usize,
         factors_output: Vec<Radix>,
     ) -> Self {
         let cached = Self::get_or_create_fft_data(
+            sample_rate_input,
+            sample_rate_output,
             fft_size_input,
             factors_input,
             fft_size_output,
@@ -256,15 +266,18 @@ impl FftResampler {
     /// new FFT objects each time.
     #[cfg(not(feature = "no_std"))]
     fn get_or_create_fft_data(
+        sample_rate_input: u32,
+        sample_rate_output: u32,
         fft_size_input: usize,
         factors_in: Vec<Radix>,
         fft_size_output: usize,
         factors_out: Vec<Radix>,
     ) -> FftCacheData {
+        let cache_key = ((sample_rate_input as u64) << 32) | (sample_rate_output as u64);
         FFT_CACHE
             .lock()
             .unwrap()
-            .entry((fft_size_input, fft_size_output))
+            .entry(cache_key)
             .or_insert_with(|| {
                 Self::create_fft_data(fft_size_input, factors_in, fft_size_output, factors_out)
             })
@@ -273,6 +286,8 @@ impl FftResampler {
 
     #[cfg(feature = "no_std")]
     fn get_or_create_fft_data(
+        _sample_rate_input: u32,
+        _sample_rate_output: u32,
         fft_size_input: usize,
         factors_in: Vec<Radix>,
         fft_size_output: usize,
@@ -305,7 +320,13 @@ impl FftResampler {
             false => calculate_cutoff_kaiser(fft_size_input, KAISER_BETA),
         };
 
-        let sincs = make_sincs_for_kaiser(fft_size_input, 1, cutoff as f32, KAISER_BETA);
+        let sincs = make_sincs_for_kaiser(
+            fft_size_input,
+            1,
+            cutoff as f32,
+            KAISER_BETA,
+            WindowType::Periodic,
+        );
         let mut filter_time = vec![0.0; 2 * fft_size_input];
         let mut filter_spectrum = vec![Complex32::zero(); fft_size_input + 1];
 
@@ -395,7 +416,7 @@ mod tests {
         ];
 
         for (input_rate, output_rate, desc) in test_cases {
-            let mut resampler = Resampler::<1>::new(input_rate, output_rate);
+            let mut resampler = ResamplerFft::<1>::new(input_rate, output_rate);
 
             let dc_amplitude = 0.5f32;
             let input = vec![dc_amplitude; resampler.chunk_size_input()];
@@ -429,11 +450,11 @@ mod tests {
         ];
 
         for (input_rate, output_rate, desc) in test_cases {
-            let mut resampler = Resampler::<1>::new(input_rate, output_rate);
+            let mut resampler = ResamplerFft::<1>::new(input_rate, output_rate);
 
             let amplitude = 0.5f32;
             let frequency = 1000.0f32;
-            let input_rate_hz = usize::from(input_rate) as f32;
+            let input_rate_hz = u32::from(input_rate) as f32;
 
             let chunk_size = resampler.chunk_size_input();
 
@@ -472,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_stereo_dc_amplitude_preservation() {
-        let mut resampler = Resampler::<2>::new(SampleRate::Hz48000, SampleRate::Hz44100);
+        let mut resampler = ResamplerFft::<2>::new(SampleRate::Hz48000, SampleRate::Hz44100);
 
         let dc_amplitude_left = 0.3f32;
         let dc_amplitude_right = 0.6f32;

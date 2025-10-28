@@ -1,15 +1,29 @@
 use alloc::{vec, vec::Vec};
 use core::f32::consts::PI;
 
+/// Window type for Kaiser window generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WindowType {
+    /// Periodic window (DFT-even) - used for FFT-based processing.
+    /// The window is computed over N points but is periodic with period N,
+    /// suitable for spectral analysis and overlap-add FFT methods.
+    Periodic,
+    /// Symmetric window (DFT-odd) - used for FIR filter design.
+    /// The window is truly symmetric around its center point,
+    /// suitable for time-domain FIR filter coefficients.
+    Symmetric,
+}
+
 pub(crate) fn make_sincs_for_kaiser(
     sample_count: usize,
     factor: usize,
     f_cutoff: f32,
     beta: f64,
+    window_type: WindowType,
 ) -> Vec<Vec<f32>> {
     let totpoints = sample_count * factor;
     let mut y = Vec::with_capacity(totpoints);
-    let window = make_kaiser_window(totpoints, beta);
+    let window = make_kaiser_window(totpoints, beta, window_type);
     let mut sum = 0.0;
 
     let sinc = |value: f32| -> f32 {
@@ -45,21 +59,34 @@ pub(crate) fn make_sincs_for_kaiser(
 /// The Kaiser window is a near-optimal window function that provides a good trade-off
 /// between main lobe width and side lobe attenuation. It is computed using the modified
 /// Bessel function of the first kind, order zero (I₀).
-fn make_kaiser_window(sample_count: usize, beta: f64) -> Vec<f32> {
+///
+/// # Window Types
+/// - `WindowType::Periodic`: For FFT-based processing (overlap-add, spectral analysis)
+/// - `WindowType::Symmetric`: For FIR filter design (time-domain filter coefficients)
+fn make_kaiser_window(sample_count: usize, beta: f64, window_type: WindowType) -> Vec<f32> {
     let mut window = Vec::with_capacity(sample_count);
 
-    let window_half_length = sample_count as f64 / 2.0;
     let bessel_beta = bessel_i0(beta);
 
     for index in 0..sample_count {
         let x = index as f64;
+
+        let normalized_x = match window_type {
+            WindowType::Periodic => {
+                // Periodic: x ∈ [0, N) mapped to [-1, 1) using N/2
+                x / (sample_count as f64 / 2.0) - 1.0
+            }
+            WindowType::Symmetric => {
+                // Symmetric: x ∈ [0, N) mapped to [-1, 1] using (N-1)/2
+                2.0 * x / (sample_count - 1) as f64 - 1.0
+            }
+        };
+
         #[cfg(not(feature = "no_std"))]
-        let value =
-            bessel_i0(beta * f64::sqrt(1.0 - (x / window_half_length - 1.0).powi(2))) / bessel_beta;
+        let value = bessel_i0(beta * f64::sqrt(1.0 - normalized_x.powi(2))) / bessel_beta;
         #[cfg(feature = "no_std")]
-        let value =
-            bessel_i0(beta * libm::sqrt(1.0 - libm::pow(x / window_half_length - 1.0, 2.0)))
-                / bessel_beta;
+        let value = bessel_i0(beta * libm::sqrt(1.0 - libm::pow(normalized_x, 2.0))) / bessel_beta;
+
         window.push(value as f32);
     }
 
@@ -133,9 +160,9 @@ mod tests {
     }
 
     #[test]
-    fn test_make_kaiser_window_small_beta() {
+    fn test_make_kaiser_window_small_beta_periodic() {
         // Test against scipy.signal.windows.kaiser(5, 0.5, sym=False)
-        let window = make_kaiser_window(5, 0.5);
+        let window = make_kaiser_window(5, 0.5, WindowType::Periodic);
         let expected = vec![
             0.940306193319157,
             0.978296239370539,
@@ -151,9 +178,9 @@ mod tests {
     }
 
     #[test]
-    fn test_make_kaiser_window_beta_5() {
+    fn test_make_kaiser_window_beta_5_periodic() {
         // Test against scipy.signal.windows.kaiser(15, 5.0, sym=False)
-        let window = make_kaiser_window(15, 5.0);
+        let window = make_kaiser_window(15, 5.0, WindowType::Periodic);
         let expected = vec![
             0.036710892271287,
             0.120260370289032,
@@ -179,9 +206,9 @@ mod tests {
     }
 
     #[test]
-    fn test_make_kaiser_window_beta_10() {
+    fn test_make_kaiser_window_beta_10_periodic() {
         // Test against scipy.signal.windows.kaiser(9, 10.0, sym=False)
-        let window = make_kaiser_window(9, 10.0);
+        let window = make_kaiser_window(9, 10.0, WindowType::Periodic);
         let expected = vec![
             0.000355149374724,
             0.030999213508099,
@@ -226,7 +253,8 @@ mod tests {
         let f_cutoff = 0.9;
         let beta = 10.0;
 
-        let result = make_sincs_for_kaiser(sample_count, factor, f_cutoff, beta);
+        let result =
+            make_sincs_for_kaiser(sample_count, factor, f_cutoff, beta, WindowType::Periodic);
 
         assert_eq!(
             result.len(),
@@ -243,18 +271,110 @@ mod tests {
     }
 
     #[test]
-    fn test_make_sincs_for_kaiser_reference_values() {
-        // Test against numpy/scipy reference implementation.
+    fn test_make_sincs_for_kaiser_reference_values_periodic() {
+        // Test against numpy/scipy reference implementation (periodic window).
         let sample_count = 4;
         let factor = 2;
         let f_cutoff = 0.9;
         let beta = 10.0;
 
-        let result = make_sincs_for_kaiser(sample_count, factor, f_cutoff, beta);
+        let result =
+            make_sincs_for_kaiser(sample_count, factor, f_cutoff, beta, WindowType::Periodic);
 
         let expected = vec![
             vec![-0.0084796025, 0.4976338439, 0.4976338439, -0.0084796025],
             vec![-0.0000355271, 0.0296676259, 0.9623917926, 0.0296676259],
+        ];
+
+        for (actual_row, expected_row) in result.iter().zip(&expected) {
+            for (&actual, &exp) in actual_row.iter().zip(expected_row) {
+                assert_approx_f32(actual as f64, exp);
+            }
+        }
+    }
+
+    #[test]
+    fn test_make_kaiser_window_small_beta_symmetric() {
+        // Test against scipy.signal.windows.kaiser(5, 0.5, sym=True)
+        let window = make_kaiser_window(5, 0.5, WindowType::Symmetric);
+        let expected = vec![
+            0.940306193319157,
+            0.984902269883833,
+            1.000000000000000,
+            0.984902269883833,
+            0.940306193319157,
+        ];
+
+        assert_eq!(window.len(), expected.len());
+        for (&actual, &exp) in window.iter().zip(&expected) {
+            assert_approx_f32(actual as f64, exp);
+        }
+    }
+
+    #[test]
+    fn test_make_kaiser_window_beta_5_symmetric() {
+        // Test against scipy.signal.windows.kaiser(15, 5.0, sym=True)
+        let window = make_kaiser_window(15, 5.0, WindowType::Symmetric);
+        let expected = vec![
+            0.036710892271287,
+            0.127982199301765,
+            0.270694417889417,
+            0.453689854203301,
+            0.651738235245363,
+            0.830535847455841,
+            0.955247316456437,
+            1.000000000000000,
+            0.955247316456437,
+            0.830535847455841,
+            0.651738235245363,
+            0.453689854203301,
+            0.270694417889417,
+            0.127982199301765,
+            0.036710892271287,
+        ];
+
+        assert_eq!(window.len(), expected.len());
+        for (&actual, &exp) in window.iter().zip(&expected) {
+            assert_approx_f32(actual as f64, exp);
+        }
+    }
+
+    #[test]
+    fn test_make_kaiser_window_beta_10_symmetric() {
+        // Test against scipy.signal.windows.kaiser(9, 10.0, sym=True)
+        let window = make_kaiser_window(9, 10.0, WindowType::Symmetric);
+        let expected = vec![
+            0.000355149374724,
+            0.041939800327748,
+            0.282059620822733,
+            0.740117133443384,
+            1.000000000000000,
+            0.740117133443384,
+            0.282059620822733,
+            0.041939800327748,
+            0.000355149374724,
+        ];
+
+        assert_eq!(window.len(), expected.len());
+        for (&actual, &exp) in window.iter().zip(&expected) {
+            assert_approx_f32(actual as f64, exp);
+        }
+    }
+
+    #[test]
+    fn test_make_sincs_for_kaiser_reference_values_symmetric() {
+        // Test against numpy/scipy reference implementation (symmetric window).
+        let sample_count = 4;
+        let factor = 2;
+        let f_cutoff = 0.9;
+        let beta = 10.0;
+
+        let result =
+            make_sincs_for_kaiser(sample_count, factor, f_cutoff, beta, WindowType::Symmetric);
+
+        let expected = vec![
+            vec![-0.0135119673, 0.6818196469, 0.3016755841, -0.0000802533],
+            vec![-0.0000397065, 0.0471924586, 0.9759149497, 0.0070292878],
         ];
 
         for (actual_row, expected_row) in result.iter().zip(&expected) {
@@ -273,7 +393,8 @@ mod tests {
         let f_cutoff = 0.95;
         let beta = 10.0;
 
-        let result = make_sincs_for_kaiser(sample_count, factor, f_cutoff, beta);
+        let result =
+            make_sincs_for_kaiser(sample_count, factor, f_cutoff, beta, WindowType::Periodic);
 
         let mut total_sum = 0.0;
         for row in &result {

@@ -189,25 +189,117 @@ class ResamplerTester:
 
         if stopband_idx < len(magnitude_db) and cutoff_idx > passband_idx:
             passband_ripple = np.ptp(magnitude_db[passband_idx:cutoff_idx])
-            stopband_atten = np.max(magnitude_db[stopband_idx:])
+            passband_max = np.max(magnitude_db[passband_idx:cutoff_idx])
+            stopband_peak = np.max(magnitude_db[stopband_idx:])
+            attenuation = passband_max - stopband_peak
 
-            metrics_text = f'Passband ripple: ±{passband_ripple/2:.2f} dB\n'
-            metrics_text += f'Stopband peak: {stopband_atten:.1f} dB'
+            # Determine if filter is working properly (Kaiser beta=10 should give ~100 dB attenuation)
+            if attenuation < 50:
+                status = '❌ BROKEN'
+                box_color = 'red'
+            elif attenuation < 80:
+                status = '⚠️ POOR'
+                box_color = 'orange'
+            else:
+                status = '✓ GOOD'
+                box_color = 'lightgreen'
+
+            metrics_text = f'{status}\n'
+            metrics_text += f'Passband peak: {passband_max:.1f} dB\n'
+            metrics_text += f'Stopband peak: {stopband_peak:.1f} dB\n'
+            metrics_text += f'Attenuation: {attenuation:.1f} dB\n'
+            metrics_text += f'Expected: ~100 dB'
 
             ax.text(0.02, 0.05, metrics_text, transform=ax.transAxes,
                     verticalalignment='bottom', fontsize=9, fontfamily='monospace',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                    bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.8))
         elif stopband_idx < len(magnitude_db):
             # Just show stopband if passband measurement fails
-            stopband_atten = np.max(magnitude_db[stopband_idx:])
+            stopband_peak = np.max(magnitude_db[stopband_idx:])
 
-            metrics_text = f'Stopband peak: {stopband_atten:.1f} dB'
+            metrics_text = f'Stopband peak: {stopband_peak:.1f} dB'
 
             ax.text(0.02, 0.05, metrics_text, transform=ax.transAxes,
                     verticalalignment='bottom', fontsize=9, fontfamily='monospace',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
-        print(f"✓ Analyzed filter frequency response")
+        # Detailed filter analysis
+        print(f"✓ Analyzed filter frequency response:")
+        print(f"  Input rate: {self.input_rate} Hz, Output rate: {self.output_rate} Hz")
+        print(f"  Input Nyquist: {nyquist_in:.0f} Hz, Output Nyquist: {rate/2:.0f} Hz")
+        print()
+
+        # Define passband (DC to 90% of input Nyquist or output Nyquist, whichever is lower)
+        min_nyquist = min(nyquist_in, rate / 2)
+        passband_end_freq = min_nyquist * 0.9
+        passband_end_idx = np.argmax(freqs > passband_end_freq)
+
+        # Define stopband (starts above input Nyquist or output Nyquist)
+        stopband_start_freq = min_nyquist * 1.1
+        stopband_start_idx = np.argmax(freqs > stopband_start_freq)
+
+        # Find DC level (reference for measurements)
+        dc_level = magnitude_db[1]  # Skip DC bin at 0
+
+        # Passband analysis (DC to 90% Nyquist)
+        if passband_end_idx > 10:
+            passband_magnitudes = magnitude_db[1:passband_end_idx]
+            passband_max = np.max(passband_magnitudes)
+            passband_min = np.min(passband_magnitudes)
+            passband_ripple = passband_max - passband_min
+            passband_mean = np.mean(passband_magnitudes)
+
+            print(f"  PASSBAND (DC to {passband_end_freq:.0f} Hz):")
+            print(f"    - Peak level: {passband_max:.2f} dB")
+            print(f"    - Min level: {passband_min:.2f} dB")
+            print(f"    - Ripple: {passband_ripple:.2f} dB (±{passband_ripple/2:.2f} dB)")
+            print(f"    - Mean level: {passband_mean:.2f} dB")
+
+            # Find -3dB cutoff
+            cutoff_3db_idx = np.argmax(magnitude_db < passband_max - 3.0)
+            if cutoff_3db_idx > 0:
+                cutoff_3db_freq = freqs[cutoff_3db_idx]
+                print(f"    - -3dB cutoff: {cutoff_3db_freq:.0f} Hz ({cutoff_3db_freq/min_nyquist:.2f} × Nyquist)")
+
+        # Stopband analysis (above 110% Nyquist)
+        if stopband_start_idx > 0 and stopband_start_idx < len(magnitude_db) - 10:
+            stopband_magnitudes = magnitude_db[stopband_start_idx:]
+            stopband_max = np.max(stopband_magnitudes)
+            stopband_min = np.min(stopband_magnitudes)
+            stopband_ripple = stopband_max - stopband_min
+            stopband_mean = np.mean(stopband_magnitudes)
+
+            # Calculate attenuation relative to passband
+            attenuation = passband_max - stopband_max if passband_end_idx > 10 else -stopband_max
+
+            # Determine status
+            if attenuation < 50:
+                status = "❌ BROKEN"
+            elif attenuation < 80:
+                status = "⚠️  POOR"
+            else:
+                status = "✓  GOOD"
+
+            print(f"\n  STOPBAND ({stopband_start_freq:.0f} Hz to {rate/2:.0f} Hz): {status}")
+            print(f"    - Peak level: {stopband_max:.2f} dB")
+            print(f"    - Min level: {stopband_min:.2f} dB")
+            print(f"    - Ripple: {stopband_ripple:.2f} dB")
+            print(f"    - Mean level: {stopband_mean:.2f} dB")
+            print(f"    - Attenuation: {attenuation:.2f} dB (Expected: ~100 dB)")
+
+            if attenuation < 50:
+                print(f"    ❌ CRITICAL: Stopband attenuation is BROKEN! Should be ~100 dB!")
+            elif attenuation < 80:
+                print(f"    ⚠️  WARNING: Stopband attenuation is below expected performance!")
+
+            # Check for ripple pattern (should see oscillations in stopband)
+            # Calculate standard deviation as measure of ripple
+            stopband_std = np.std(stopband_magnitudes)
+            print(f"    - Ripple std dev: {stopband_std:.2f} dB")
+            if stopband_std < 0.5:
+                print(f"    ⚠️  WARNING: Low ripple variance suggests flat/constant response!")
+
+        print()
 
     def _analyze_sweep_spectrogram(self, fig, input_dir):
         """Analyze frequency response from sweep."""
