@@ -1,4 +1,5 @@
-use std::f32::consts::PI;
+use alloc::{vec, vec::Vec};
+use core::f32::consts::PI;
 
 pub(crate) fn make_sincs_for_kaiser(
     sample_count: usize,
@@ -14,7 +15,10 @@ pub(crate) fn make_sincs_for_kaiser(
     let sinc = |value: f32| -> f32 {
         match value == 0.0 {
             true => 1.0,
+            #[cfg(not(feature = "no_std"))]
             false => (value * PI).sin() / (value * PI),
+            #[cfg(feature = "no_std")]
+            false => libm::sinf(value * PI) / (value * PI),
         }
     };
 
@@ -49,8 +53,13 @@ fn make_kaiser_window(sample_count: usize, beta: f64) -> Vec<f32> {
 
     for index in 0..sample_count {
         let x = index as f64;
+        #[cfg(not(feature = "no_std"))]
         let value =
             bessel_i0(beta * f64::sqrt(1.0 - (x / window_half_length - 1.0).powi(2))) / bessel_beta;
+        #[cfg(feature = "no_std")]
+        let value =
+            bessel_i0(beta * libm::sqrt(1.0 - libm::pow(x / window_half_length - 1.0, 2.0)))
+                / bessel_beta;
         window.push(value as f32);
     }
 

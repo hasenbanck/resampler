@@ -1,7 +1,9 @@
+use alloc::{sync::Arc, vec, vec::Vec};
+use core::array;
+#[cfg(not(feature = "no_std"))]
 use std::{
-    array,
     collections::HashMap,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{LazyLock, Mutex},
 };
 
 use crate::{
@@ -29,6 +31,7 @@ impl Clone for FftCacheData {
     }
 }
 
+#[cfg(not(feature = "no_std"))]
 static FFT_CACHE: LazyLock<Mutex<HashMap<(usize, usize), FftCacheData>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -218,7 +221,7 @@ impl FftResampler {
         fft_size_output: usize,
         factors_output: Vec<Radix>,
     ) -> Self {
-        let cached = Self::get_or_create_cached(
+        let cached = Self::get_or_create_fft_data(
             fft_size_input,
             factors_input,
             fft_size_output,
@@ -248,53 +251,76 @@ impl FftResampler {
         }
     }
 
-    fn get_or_create_cached(
+    /// Retrieves or creates FFT data. By default, this uses a global cache to share FFT
+    /// objects across multiple Resampler instances. With the "no_std" feature, it creates
+    /// new FFT objects each time.
+    #[cfg(not(feature = "no_std"))]
+    fn get_or_create_fft_data(
+        fft_size_input: usize,
+        factors_in: Vec<Radix>,
+        fft_size_output: usize,
+        factors_out: Vec<Radix>,
+    ) -> FftCacheData {
+        FFT_CACHE
+            .lock()
+            .unwrap()
+            .entry((fft_size_input, fft_size_output))
+            .or_insert_with(|| {
+                Self::create_fft_data(fft_size_input, factors_in, fft_size_output, factors_out)
+            })
+            .clone()
+    }
+
+    #[cfg(feature = "no_std")]
+    fn get_or_create_fft_data(
+        fft_size_input: usize,
+        factors_in: Vec<Radix>,
+        fft_size_output: usize,
+        factors_out: Vec<Radix>,
+    ) -> FftCacheData {
+        Self::create_fft_data(fft_size_input, factors_in, fft_size_output, factors_out)
+    }
+
+    /// Creates FFT objects and filter spectrum. This is the no-std compatible core logic.
+    fn create_fft_data(
         fft_size_input: usize,
         factors_in: Vec<Radix>,
         fft_size_output: usize,
         factors_out: Vec<Radix>,
     ) -> FftCacheData {
         // Scale factors for the 2x windowing multiplier.
-        let mut fft_factors_input = factors_in.clone();
+        let mut fft_factors_input = factors_in;
         fft_factors_input.push(Radix::Factor2);
-        let mut fft_factors_output = factors_out.clone();
+        let mut fft_factors_output = factors_out;
         fft_factors_output.push(Radix::Factor2);
 
         let fft = RadixFFT::<Forward>::new(fft_factors_input);
         let ifft = RadixFFT::<Inverse>::new(fft_factors_output);
 
-        FFT_CACHE
-            .lock()
-            .unwrap()
-            .entry((fft_size_input, fft_size_output))
-            .or_insert_with(|| {
-                let cutoff = match fft_size_input > fft_size_output {
-                    true => {
-                        let scale = fft_size_output as f64 / fft_size_input as f64;
-                        calculate_cutoff_kaiser(fft_size_output, KAISER_BETA) * scale
-                    }
-                    false => calculate_cutoff_kaiser(fft_size_input, KAISER_BETA),
-                };
+        let cutoff = match fft_size_input > fft_size_output {
+            true => {
+                let scale = fft_size_output as f64 / fft_size_input as f64;
+                calculate_cutoff_kaiser(fft_size_output, KAISER_BETA) * scale
+            }
+            false => calculate_cutoff_kaiser(fft_size_input, KAISER_BETA),
+        };
 
-                let sincs = make_sincs_for_kaiser(fft_size_input, 1, cutoff as f32, KAISER_BETA);
-                let mut filter_time = vec![0.0; 2 * fft_size_input];
-                let mut filter_spectrum = vec![Complex32::zero(); fft_size_input + 1];
+        let sincs = make_sincs_for_kaiser(fft_size_input, 1, cutoff as f32, KAISER_BETA);
+        let mut filter_time = vec![0.0; 2 * fft_size_input];
+        let mut filter_spectrum = vec![Complex32::zero(); fft_size_input + 1];
 
-                for (index, filter_value) in filter_time.iter_mut().enumerate().take(fft_size_input)
-                {
-                    *filter_value = sincs[0][index] / (2 * fft_size_input) as f32;
-                }
+        for (index, filter_value) in filter_time.iter_mut().enumerate().take(fft_size_input) {
+            *filter_value = sincs[0][index] / (2 * fft_size_input) as f32;
+        }
 
-                let mut scratchpad = vec![Complex32::zero(); fft.scratchpad_size()];
-                fft.process(&filter_time, &mut filter_spectrum, &mut scratchpad);
+        let mut scratchpad = vec![Complex32::zero(); fft.scratchpad_size()];
+        fft.process(&filter_time, &mut filter_spectrum, &mut scratchpad);
 
-                FftCacheData {
-                    filter_spectrum: filter_spectrum.into(),
-                    fft: Arc::new(fft),
-                    ifft: Arc::new(ifft),
-                }
-            })
-            .clone()
+        FftCacheData {
+            filter_spectrum: filter_spectrum.into(),
+            fft: Arc::new(fft),
+            ifft: Arc::new(ifft),
+        }
     }
 
     fn resample(&mut self, wave_input: &[f32], wave_output: &mut [f32], overlap: &mut [f32]) {
@@ -347,7 +373,7 @@ impl FftResampler {
 
 #[cfg(test)]
 mod tests {
-    use std::f32::consts::PI;
+    use core::f32::consts::PI;
 
     use super::*;
 

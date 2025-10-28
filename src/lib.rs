@@ -1,5 +1,5 @@
-//! Resampler is a small, no dependency crate that is optimized for resampling audio data from one
-//! to the other sampling rate. Optimized for the most common audio sampling rates.
+//! Resampler is a small, zero-dependency crate optimized for resampling audio data from one
+//! sampling rate to another. Optimized for the most common audio sampling rates.
 //!
 //! ## Usage Example
 //!
@@ -43,6 +43,27 @@
 //! SSE on x86_64 and NEON on aarch64 are enabled by default. But to get the best performance on
 //! x86_64 AVX (+avx) and FMA (+fma) should be enabled at compile time as a target feature.
 //!
+//! ## no-std Compatibility
+//!
+//! The library supports `no-std` environments with `alloc`. To use the library in a `no-std` environment, enable the
+//! `no_std` feature:
+//!
+//! ```toml
+//! [dependencies]
+//! resampler = { version = "0.1", features = ["no_std"] }
+//! ```
+//!
+//! ### Behavior Differences
+//!
+//! When the `no_std` feature is enabled:
+//!
+//! - FFT Caching: The library will not cache FFT objects globally. Each `Resampler` instance will
+//!   create its own FFT objects and filter spectra. This increases creation time and memory
+//!   consumption for multiple `Resampler` for the same configuration.
+//!
+//! The default build (without `no_std` feature) has zero dependencies and uses the standard
+//! library for optimal performance and memory efficiency through global FFT caching.
+//!
 //! ## License
 //!
 //! Licensed under either of
@@ -51,7 +72,11 @@
 //! - MIT license
 //!
 //! at your option.
+#![cfg_attr(feature = "no_std", no_std)]
 #![forbid(missing_docs)]
+
+extern crate alloc;
+
 mod error;
 mod fft;
 mod planner;
