@@ -1,17 +1,17 @@
 /// Errors the process function can throw.
 #[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ResampleError {
-    /// Input buffer size is too small.
-    InputBufferSize,
-    /// Output buffer size is too small.
-    OutputBufferSize,
+    /// Input buffer size is invalid.
+    InvalidInputBufferSize,
+    /// Output buffer size is invalid.
+    InvalidOutputBufferSize,
 }
 
 impl core::fmt::Display for ResampleError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::InputBufferSize => "Input buffer size is too small".fmt(f),
-            Self::OutputBufferSize => "Output buffer size is too small".fmt(f),
+            Self::InvalidInputBufferSize => "Input buffer size is invalid".fmt(f),
+            Self::InvalidOutputBufferSize => "Output buffer size is invalid".fmt(f),
         }
     }
 }

@@ -22,7 +22,11 @@ criterion = { version = "0.7", features = ["html_reports"] }
 rand_aes = "0.5"
 
 [[bench]]
-name = "benchmark_resampler"
+name = "benchmark_resampler_fft"
+harness = false
+
+[[bench]]
+name = "benchmark_resampler_fir"
 harness = false
 
 [lib]

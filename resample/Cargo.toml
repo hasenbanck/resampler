@@ -7,5 +7,5 @@ edition = "2024"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
-hound = "3.5"
+hound = "3"
 resampler = { path = ".." }

@@ -2,7 +2,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand_aes::tls::rand_f32;
-use resampler::{Resampler, SampleRate};
+use resampler::{ResamplerFft, SampleRate};
 
 struct BenchmarkConfig {
     input_rate: SampleRate,
@@ -44,7 +44,7 @@ fn bench_resampler(c: &mut Criterion) {
         const CHANNELS: usize = 2;
 
         let temp_resampler =
-            Resampler::<CHANNELS>::new(bench_config.input_rate, bench_config.output_rate);
+            ResamplerFft::<CHANNELS>::new(bench_config.input_rate, bench_config.output_rate);
 
         let chunk_size_output = temp_resampler.chunk_size_output();
 
@@ -55,8 +55,10 @@ fn bench_resampler(c: &mut Criterion) {
             BenchmarkId::new("process", bench_config.description),
             bench_config,
             |b, bench_config| {
-                let mut resampler =
-                    Resampler::<CHANNELS>::new(bench_config.input_rate, bench_config.output_rate);
+                let mut resampler = ResamplerFft::<CHANNELS>::new(
+                    bench_config.input_rate,
+                    bench_config.output_rate,
+                );
 
                 let chunk_size_input = resampler.chunk_size_input();
                 let chunk_size_output = resampler.chunk_size_output();

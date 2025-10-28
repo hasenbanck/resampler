@@ -651,7 +651,7 @@ impl RadixFFT<Inverse> {
 
 #[cfg(test)]
 mod tests {
-    use std::f32::consts::PI;
+    use core::f32::consts::PI;
 
     use super::*;
 
@@ -1546,7 +1546,7 @@ mod tests {
 
         // Verify that casting is safe.
         let reals = [1.0f32, 2.0, 3.0, 4.0];
-        let complex = unsafe { std::slice::from_raw_parts(reals.as_ptr() as *const Complex32, 2) };
+        let complex = unsafe { core::slice::from_raw_parts(reals.as_ptr() as *const Complex32, 2) };
 
         assert_eq!(complex[0].re, 1.0);
         assert_eq!(complex[0].im, 2.0);

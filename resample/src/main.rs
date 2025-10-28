@@ -1,7 +1,7 @@
 use std::{env, time::Instant};
 
 use hound::{WavReader, WavWriter};
-use resampler::{Resampler, SampleRate};
+use resampler::{Latency, ResamplerFft, ResamplerFir, SampleRate};
 
 mod linear_resampler;
 use linear_resampler::LinearResampler;
@@ -11,18 +11,23 @@ fn main() {
 
     if args.len() != 4 && args.len() != 5 {
         eprintln!(
-            "Usage: {} [--linear] --sample-rate=<rate> <input.wav> <output.wav>",
+            "Usage: {} [--fir|--linear] --sample-rate=<rate> <input.wav> <output.wav>",
             args[0]
         );
-        eprintln!(
-            "  --linear: Use linear interpolation instead of FFT resampling (much lower quality)"
-        );
+        eprintln!("  --fir:    Use polyphase FIR resampling (low latency, good quality)");
+        eprintln!("  --linear: Use linear interpolation (much lower quality)");
+        eprintln!("  Default:  Use FFT resampling (highest quality)");
         std::process::exit(1);
     }
 
     let use_linear = args.iter().any(|arg| arg == "--linear");
+    let use_fir = args.iter().any(|arg| arg == "--fir");
 
-    let (sample_rate_idx, input_idx, output_idx) = if use_linear { (2, 3, 4) } else { (1, 2, 3) };
+    let (sample_rate_idx, input_idx, output_idx) = if use_linear || use_fir {
+        (2, 3, 4)
+    } else {
+        (1, 2, 3)
+    };
 
     let sample_rate_arg = &args[sample_rate_idx];
     let target_sample_rate = if sample_rate_arg.starts_with("--sample-rate=") {
@@ -52,12 +57,14 @@ fn main() {
         "Method: {}",
         if use_linear {
             "Linear interpolation"
+        } else if use_fir {
+            "FIR polyphase resampling"
         } else {
             "FFT resampling"
         }
     );
 
-    let input_rate = match SampleRate::try_from(input_sample_rate as usize) {
+    let input_rate = match SampleRate::try_from(input_sample_rate) {
         Ok(rate) => rate,
         Err(_) => {
             eprintln!(
@@ -67,7 +74,7 @@ fn main() {
         }
     };
 
-    let output_rate = match SampleRate::try_from(target_sample_rate as usize) {
+    let output_rate = match SampleRate::try_from(target_sample_rate) {
         Ok(rate) => rate,
         Err(_) => {
             eprintln!(
@@ -114,10 +121,13 @@ fn main() {
     println!("Input frames: {input_frames}");
 
     let start = Instant::now();
-    let resampled_samples = if use_linear {
+    let resampled_samples = if use_fir {
+        let mut resampler = ResamplerFir::<2>::new(input_rate, output_rate, Latency::default());
+        resample_batch_fir(&mut resampler, &stereo_samples)
+    } else if use_linear {
         resample_batch_linear(input_rate, output_rate, &stereo_samples)
     } else {
-        let mut resampler = Resampler::<2>::new(input_rate, output_rate);
+        let mut resampler = ResamplerFft::<2>::new(input_rate, output_rate);
         resample_batch(&mut resampler, &stereo_samples)
     };
 
@@ -153,7 +163,7 @@ fn main() {
 }
 
 /// Resample a batch of interleaved stereo samples using the chunk-based resampler API.
-fn resample_batch(resampler: &mut Resampler<2>, input_samples: &[f32]) -> Vec<f32> {
+fn resample_batch(resampler: &mut ResamplerFft<2>, input_samples: &[f32]) -> Vec<f32> {
     let chunk_size_input = resampler.chunk_size_input();
     let chunk_size_output = resampler.chunk_size_output();
 
@@ -208,6 +218,37 @@ fn resample_batch(resampler: &mut Resampler<2>, input_samples: &[f32]) -> Vec<f3
         / chunk_size_input as f64)
         .ceil() as usize;
     output_samples.truncate(expected_output_samples);
+
+    output_samples
+}
+
+/// Resample a batch of interleaved stereo samples using the FIR polyphase resampler with streaming API.
+fn resample_batch_fir(resampler: &mut ResamplerFir<2>, input_samples: &[f32]) -> Vec<f32> {
+    const CHUNK_SIZE: usize = 256;
+
+    let mut output_samples = Vec::new();
+    let mut input_offset = 0;
+
+    let buffer_size_output = resampler.buffer_size_output();
+    let mut output_buffer = vec![0.0f32; buffer_size_output];
+
+    while input_offset < input_samples.len() {
+        let remaining = input_samples.len() - input_offset;
+        let chunk_size = remaining.min(CHUNK_SIZE);
+        let input_chunk = &input_samples[input_offset..input_offset + chunk_size];
+
+        let (consumed, produced) = resampler
+            .resample(input_chunk, &mut output_buffer)
+            .expect("FIR resampling failed");
+
+        output_samples.extend_from_slice(&output_buffer[..produced]);
+
+        input_offset += consumed;
+
+        if consumed == 0 {
+            break;
+        }
+    }
 
     output_samples
 }

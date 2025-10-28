@@ -39,8 +39,8 @@ impl ConversionConfig {
         let input_family = input_rate.family();
         let output_family = output_rate.family();
 
-        let input_multiplier = input_rate.family_multiplier();
-        let output_multiplier = output_rate.family_multiplier();
+        let input_multiplier = input_rate.family_multiplier() as usize;
+        let output_multiplier = output_rate.family_multiplier() as usize;
 
         let base_config = match (input_family, output_family) {
             // Same family: base 1:1 ratio (2 → 2)

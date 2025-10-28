@@ -9,8 +9,8 @@ pub(crate) struct LinearResampler<const CHANNELS: usize> {
 impl<const CHANNELS: usize> LinearResampler<CHANNELS> {
     pub(crate) fn new(input_rate: SampleRate, output_rate: SampleRate) -> Self {
         Self {
-            input_rate: usize::from(input_rate) as f64,
-            output_rate: usize::from(output_rate) as f64,
+            input_rate: u32::from(input_rate) as f64,
+            output_rate: u32::from(output_rate) as f64,
         }
     }
 
