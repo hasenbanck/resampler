@@ -31,14 +31,6 @@ pub(super) unsafe fn convolve_neon(input: &[f32], coeffs: &[f32], taps: usize) -
         }
 
         // Horizontal sum: reduce 4-element vector to single scalar.
-        // Step 1: Extract low and high 64-bit halves.
-        let low = vget_low_f32(acc); // [a, b]
-        let high = vget_high_f32(acc); // [c, d]
-        // Step 2: Add the halves: [a+c, b+d].
-        let sum1 = vadd_f32(low, high);
-        // Step 3: Pairwise add to get final sum: [a+c+b+d, a+c+b+d].
-        let sum2 = vpadd_f32(sum1, sum1);
-        // Step 4: Extract the final scalar result.
-        vget_lane_f32(sum2, 0)
+        vaddvq_f32(acc)
     }
 }

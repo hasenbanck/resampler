@@ -2,7 +2,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rand_aes::tls::rand_f32;
-use resampler::{Latency, ResamplerFir, SampleRate};
+use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
 
 struct BenchmarkConfig {
     input_rate: SampleRate,
@@ -60,7 +60,8 @@ fn bench_resampler_fir(c: &mut Criterion) {
                 let mut resampler = ResamplerFir::<CHANNELS>::new(
                     bench_config.input_rate,
                     bench_config.output_rate,
-                    Latency::default(),
+                    Latency::Sample64,
+                    Attenuation::Db90,
                 );
 
                 let input = generate_white_noise(CHUNK_SIZE);

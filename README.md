@@ -27,13 +27,14 @@ resampler.resample(&input, &mut output).unwrap();
 ### FIR-Based Resampler (Low Latency, Streaming)
 
 ```rust
-use resampler::{Latency, ResamplerFir, SampleRate};
+use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
 
 // Create a stereo resampler with configurable latency (16, 32, or 64 samples).
 let mut resampler = ResamplerFir::<2>::new(
     SampleRate::Hz48000,
     SampleRate::Hz44100,
-    Latency::_32
+    Latency::Sample64,
+    Attenuation::Db90,
 );
 
 // Streaming API - accepts arbitrary input buffer sizes.
@@ -127,7 +128,7 @@ The following spectrograms demonstrate the high-quality output of the resampler 
 
 ![Analysis of 44.1 kHz to 48 kHz resampling with the FFT resampler](assets/fft_44100_to_48000.png)
 
-### 22.05 kHz → 44.1 kHz Conversion With FIR Resampler
+### 44.1 kHz → 48 kHz Conversion With FIR Resampler
 
 ![Analysis of 44.1 kHz to 48 kHz resampling with the FIR resampler](assets/fir_44100_to_48000.png)
 

@@ -12,7 +12,6 @@ use crate::{
     window::{WindowType, calculate_cutoff_kaiser, make_sincs_for_kaiser},
 };
 
-const KAISER_BETA: f64 = 10.0;
 const PHASES: usize = 1024;
 const INPUT_CAPACITY: usize = 1024;
 
@@ -28,47 +27,82 @@ impl Clone for FirCacheData {
     }
 }
 
+#[cfg(not(feature = "no_std"))]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+struct FirCacheKey {
+    cutoff_bits: u32,
+    taps: usize,
+    attenuation: Attenuation,
+}
+
+/// The desired stopband attenuation of the filter. Higher attenuation provides better stopband
+/// rejection but slightly wider transition bands.
+///
+/// Defaults to -120 dB of stopband attenuation.
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum Attenuation {
+    /// Stopband attenuation of around -60 dB (Inaudible threshold).
+    Db60,
+    /// Stopband attenuation of around -90 dB (transparent for 16-bit audio).
+    Db90,
+    /// Stopband attenuation of around -120 dB (transparent for 24-bit audio).
+    #[default]
+    Db120,
+}
+
+impl Attenuation {
+    /// Returns the Kaiser window beta value for the desired attenuation level.
+    ///
+    /// The beta value controls the shape of the Kaiser window and directly affects
+    /// the stopband attenuation of the resulting filter.
+    pub(crate) fn to_kaiser_beta(self) -> f64 {
+        match self {
+            Attenuation::Db60 => 7.0,
+            Attenuation::Db90 => 10.0,
+            Attenuation::Db120 => 13.0,
+        }
+    }
+}
+
 /// Latency configuration for the FIR resampler.
 ///
 /// Determines the number of filter taps, which affects both rolloff and algorithmic delay.
 /// Higher tap counts provide shaper rolloff but increased latency.
 ///
 /// The enum variants are named by their algorithmic delay in samples (taps / 2):
-/// - `_16`: 16 samples delay (32 taps) - lowest latency, but slow rolloff.
-/// - `_32`: 32 samples delay (64 taps) - balanced latency and quality.
-/// - `_64`: 64 samples delay (128 taps) - highest latency, but fasts rolloff.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+/// - `Sample8`: 8 samples delay (16 taps)
+/// - `Sample16`: 16 samples delay (32 taps)
+/// - `Sample32`: 32 samples delay (64 taps)
+/// - `Sample64`: 64 samples delay (128 taps)
+///
+/// Defaults to 64 samples delay (128 taps).
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Latency {
+    /// 8 samples algorithmic delay (16 taps).
+    Sample8,
     /// 16 samples algorithmic delay (32 taps).
-    _16,
+    Sample16,
     /// 32 samples algorithmic delay (64 taps).
-    _32,
+    Sample32,
     /// 64 samples algorithmic delay (128 taps).
-    _64,
+    #[default]
+    Sample64,
 }
 
 impl Latency {
     /// Returns the number of filter taps for this latency setting.
     pub const fn taps(self) -> usize {
         match self {
-            Latency::_16 => 32,
-            Latency::_32 => 64,
-            Latency::_64 => 128,
+            Latency::Sample8 => 16,
+            Latency::Sample16 => 32,
+            Latency::Sample32 => 64,
+            Latency::Sample64 => 128,
         }
     }
 }
 
-impl Default for Latency {
-    /// Returns the default latency setting (`_64` = 128 taps).
-    ///
-    /// This provides the sharpest rolloff at the cost of higher latency (64 samples).
-    fn default() -> Self {
-        Latency::_64
-    }
-}
-
 #[cfg(not(feature = "no_std"))]
-static FIR_CACHE: LazyLock<Mutex<HashMap<u32, FirCacheData>>> =
+static FIR_CACHE: LazyLock<Mutex<HashMap<FirCacheKey, FirCacheData>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// High-quality polyphase FIR audio resampler supporting multi-channel audio with streaming API.
@@ -80,6 +114,8 @@ static FIR_CACHE: LazyLock<Mutex<HashMap<u32, FirCacheData>>> =
 /// Unlike the FFT-based resampler, this implementation supports streaming with arbitrary
 /// input buffer sizes, making it ideal for real-time applications. The latency can be
 /// configured at construction time using the [`Latency`] enum to balance quality versus delay.
+///
+/// The stopband attenuation can also be configured via the [`Attenuation`] enum.
 pub struct ResamplerFir<const CHANNEL: usize> {
     /// Polyphase coefficient table: 1024 phases × N taps (where N is determined by latency setting).
     coeffs: Arc<[Vec<f32>]>,
@@ -104,32 +140,48 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
     /// - `input_rate`: Input sample rate.
     /// - `output_rate`: Output sample rate.
     /// - `latency`: Latency configuration determining filter length (32, 64, or 128 taps).
+    /// - `attenuation`: Desired stopband attenuation controlling filter quality.
     ///
     /// The resampler will generate polyphase filter coefficients optimized for the
-    /// given sample rate pair, using a Kaiser window with beta=10.0 for excellent
-    /// stopband attenuation for 16-bit sound. Higher tap counts provide better frequency
-    /// response at the cost of increased latency.
+    /// given sample rate pair, using a Kaiser window with beta value determined by the
+    /// attenuation setting. Higher tap counts provide better frequency response at the
+    /// cost of increased latency. Higher attenuation provides better stopband rejection
+    /// but slightly wider transition bands.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use resampler::{Latency, ResamplerFir, SampleRate};
+    /// use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
     ///
-    /// // Create with default latency (128 taps, 64 samples delay)
-    /// let resampler =
-    ///     ResamplerFir::<2>::new(SampleRate::Hz48000, SampleRate::Hz44100, Latency::default());
+    /// // Create with default latency (128 taps, 64 samples delay) and 90 dB attenuation
+    /// let resampler = ResamplerFir::<2>::new(
+    ///     SampleRate::Hz48000,
+    ///     SampleRate::Hz44100,
+    ///     Latency::default(),
+    ///     Attenuation::default(),
+    /// );
     ///
-    /// // Create with low latency (32 taps, 16 samples delay)
-    /// let resampler_low_latency =
-    ///     ResamplerFir::<2>::new(SampleRate::Hz48000, SampleRate::Hz44100, Latency::_16);
+    /// // Create with low latency (32 taps, 16 samples delay) and 60 dB attenuation
+    /// let resampler_low_latency = ResamplerFir::<2>::new(
+    ///     SampleRate::Hz48000,
+    ///     SampleRate::Hz44100,
+    ///     Latency::Sample16,
+    ///     Attenuation::Db60,
+    /// );
     /// ```
-    pub fn new(input_rate: SampleRate, output_rate: SampleRate, latency: Latency) -> Self {
+    pub fn new(
+        input_rate: SampleRate,
+        output_rate: SampleRate,
+        latency: Latency,
+        attenuation: Attenuation,
+    ) -> Self {
         let input_rate_hz = u32::from(input_rate) as f64;
         let output_rate_hz = u32::from(output_rate) as f64;
         let ratio = input_rate_hz / output_rate_hz;
 
         let taps = latency.taps();
-        let base_cutoff = calculate_cutoff_kaiser(taps, KAISER_BETA);
+        let beta = attenuation.to_kaiser_beta();
+        let base_cutoff = calculate_cutoff_kaiser(taps, beta);
         let cutoff = if input_rate_hz <= output_rate_hz {
             // Upsampling: preserve full input bandwidth.
             base_cutoff
@@ -138,7 +190,7 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
             base_cutoff * (output_rate_hz / input_rate_hz)
         };
 
-        let coeffs = Self::get_or_create_fir_coeffs(cutoff as f32, taps);
+        let coeffs = Self::get_or_create_fir_coeffs(cutoff as f32, taps, attenuation);
 
         let input_buffers: [Box<[f32]>; CHANNEL] =
             array::from_fn(|_| vec![0.0; INPUT_CAPACITY].into_boxed_slice());
@@ -154,29 +206,42 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         }
     }
 
-    fn create_fir_coeffs(cutoff: f32, taps: usize) -> FirCacheData {
-        let coeffs =
-            make_sincs_for_kaiser(taps, PHASES, cutoff, KAISER_BETA, WindowType::Symmetric);
+    fn create_fir_coeffs(cutoff: f32, taps: usize, beta: f64) -> FirCacheData {
+        let coeffs = make_sincs_for_kaiser(taps, PHASES, cutoff, beta, WindowType::Symmetric);
         FirCacheData {
             coeffs: Arc::from(coeffs.into_boxed_slice()),
         }
     }
 
     #[cfg(not(feature = "no_std"))]
-    fn get_or_create_fir_coeffs(cutoff: f32, taps: usize) -> Arc<[Vec<f32>]> {
-        let cache_key = cutoff.to_bits();
+    fn get_or_create_fir_coeffs(
+        cutoff: f32,
+        taps: usize,
+        attenuation: Attenuation,
+    ) -> Arc<[Vec<f32>]> {
+        let cache_key = FirCacheKey {
+            cutoff_bits: cutoff.to_bits(),
+            taps,
+            attenuation,
+        };
+        let beta = attenuation.to_kaiser_beta();
         FIR_CACHE
             .lock()
             .unwrap()
             .entry(cache_key)
-            .or_insert_with(|| Self::create_fir_coeffs(cutoff, taps))
+            .or_insert_with(|| Self::create_fir_coeffs(cutoff, taps, beta))
             .clone()
             .coeffs
     }
 
     #[cfg(feature = "no_std")]
-    fn get_or_create_fir_coeffs(cutoff: f32, taps: usize) -> Arc<[Vec<f32>]> {
-        Self::create_fir_coeffs(cutoff, taps).coeffs
+    fn get_or_create_fir_coeffs(
+        cutoff: f32,
+        taps: usize,
+        attenuation: Attenuation,
+    ) -> Arc<[Vec<f32>]> {
+        let beta = attenuation.to_kaiser_beta();
+        Self::create_fir_coeffs(cutoff, taps, beta).coeffs
     }
 
     /// Calculate the maximum output buffer size that needs to be allocated.
@@ -213,10 +278,14 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
     /// ## Example
     ///
     /// ```rust
-    /// use resampler::{Latency, ResamplerFir, SampleRate};
+    /// use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
     ///
-    /// let mut resampler =
-    ///     ResamplerFir::<1>::new(SampleRate::Hz48000, SampleRate::Hz44100, Latency::default());
+    /// let mut resampler = ResamplerFir::<1>::new(
+    ///     SampleRate::Hz48000,
+    ///     SampleRate::Hz44100,
+    ///     Latency::default(),
+    ///     Attenuation::default(),
+    /// );
     /// let buffer_size_output = resampler.buffer_size_output();
     /// let input = vec![0.0f32; 256];
     /// let mut output = vec![0.0f32; buffer_size_output];
@@ -304,12 +373,9 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         #[cfg(feature = "no_std")]
         let consumed_frames = libm::floor(self.position) as usize;
 
-        // Manually shift remaining samples to the start of buffer.
         let remaining_frames = self.buffer_fill - consumed_frames;
         for channel in 0..CHANNEL {
-            for i in 0..remaining_frames {
-                self.input_buffers[channel][i] = self.input_buffers[channel][consumed_frames + i];
-            }
+            self.input_buffers[channel].copy_within(consumed_frames..self.buffer_fill, 0);
         }
         self.buffer_fill = remaining_frames;
 
@@ -400,7 +466,12 @@ mod tests {
         let mut input = vec![0.0f32; input_samples];
         input[impulse_pos] = 1.0;
 
-        let mut resampler = ResamplerFir::<1>::new(input_rate, output_rate, Latency::_64);
+        let mut resampler = ResamplerFir::<1>::new(
+            input_rate,
+            output_rate,
+            Latency::Sample64,
+            Attenuation::Db90,
+        );
 
         let buffer_size_output = resampler.buffer_size_output();
         let mut output_buffer = vec![0.0f32; buffer_size_output];

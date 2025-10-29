@@ -35,17 +35,20 @@ pub(super) unsafe fn convolve_avx(input: &[f32], coeffs: &[f32], taps: usize) ->
             acc = _mm256_add_ps(acc, prod);
         }
 
-        // Horizontal sum: reduce 8-element vector to single scalar.
-        // Step 1: Add pairs within 128-bit lanes: [a0+a1, a2+a3, a4+a5, a6+a7, ...].
-        let sum1 = _mm256_hadd_ps(acc, acc);
-        // Step 2: Add pairs again: [a0+a1+a2+a3, a4+a5+a6+a7, ...].
-        let sum2 = _mm256_hadd_ps(sum1, sum1);
-        // Step 3: Extract high and low 128-bit lanes and add them.
-        let high = _mm256_extractf128_ps(sum2, 1);
-        let low = _mm256_castps256_ps128(sum2);
-        let sum3 = _mm_add_ps(high, low);
-        // Step 4: Extract the final scalar result.
-        _mm_cvtss_f32(sum3)
+        // Horizontal sum
+        // Step 1: Extract and add high/low 128-bit lanes to get a single 128-bit vector.
+        let high = _mm256_extractf128_ps(acc, 1);
+        let low = _mm256_castps256_ps128(acc);
+        let sum128 = _mm_add_ps(high, low);
+        // Step 2: Horizontal sum within 128-bit vector using shuffle.
+        // Shuffle to get [a2, a3, a0, a1] and add: [a0+a2, a1+a3, a2+a0, a3+a1].
+        let shuf = _mm_shuffle_ps(sum128, sum128, 0b01_00_11_10);
+        let sum1 = _mm_add_ps(sum128, shuf);
+        // Shuffle again to get [a1+a3, ...] in position 0 and add: [a0+a2+a1+a3, ...].
+        let shuf2 = _mm_shuffle_ps(sum1, sum1, 0b00_00_00_01);
+        let sum2 = _mm_add_ps(sum1, shuf2);
+        // Step 3: Extract the final scalar result.
+        _mm_cvtss_f32(sum2)
     }
 }
 
@@ -75,16 +78,19 @@ pub(super) unsafe fn convolve_avx_fma(input: &[f32], coeffs: &[f32], taps: usize
             acc = _mm256_fmadd_ps(coeffs_vec, input_vec, acc);
         }
 
-        // Horizontal sum: reduce 8-element vector to single scalar.
-        // Step 1: Add pairs within 128-bit lanes: [a0+a1, a2+a3, a4+a5, a6+a7, ...].
-        let sum1 = _mm256_hadd_ps(acc, acc);
-        // Step 2: Add pairs again: [a0+a1+a2+a3, a4+a5+a6+a7, ...].
-        let sum2 = _mm256_hadd_ps(sum1, sum1);
-        // Step 3: Extract high and low 128-bit lanes and add them.
-        let high = _mm256_extractf128_ps(sum2, 1);
-        let low = _mm256_castps256_ps128(sum2);
-        let sum3 = _mm_add_ps(high, low);
-        // Step 4: Extract the final scalar result.
-        _mm_cvtss_f32(sum3)
+        // Horizontal sum
+        // Step 1: Extract and add high/low 128-bit lanes to get a single 128-bit vector.
+        let high = _mm256_extractf128_ps(acc, 1);
+        let low = _mm256_castps256_ps128(acc);
+        let sum128 = _mm_add_ps(high, low);
+        // Step 2: Horizontal sum within 128-bit vector using shuffle.
+        // Shuffle to get [a2, a3, a0, a1] and add: [a0+a2, a1+a3, a2+a0, a3+a1].
+        let shuf = _mm_shuffle_ps(sum128, sum128, 0b01_00_11_10);
+        let sum1 = _mm_add_ps(sum128, shuf);
+        // Shuffle again to get [a1+a3, ...] in position 0 and add: [a0+a2+a1+a3, ...].
+        let shuf2 = _mm_shuffle_ps(sum1, sum1, 0b00_00_00_01);
+        let sum2 = _mm_add_ps(sum1, shuf2);
+        // Step 3: Extract the final scalar result.
+        _mm_cvtss_f32(sum2)
     }
 }
