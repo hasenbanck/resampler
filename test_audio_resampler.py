@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Audio Resampler Quality Testing Suite (Simplified)
+Audio Resampler Quality Testing Suite
 
 This script generates test signals to evaluate audio resampler quality and
 visualizes the results with filter frequency response and sweep spectrogram.
@@ -92,7 +92,7 @@ class ResamplerTester:
         sweep[-fade_samples:] *= fade_out
 
         # Normalize and duplicate for channels
-        sweep = sweep * 0.8  # Leave headroom
+        sweep = sweep * 0.99
         return np.column_stack([sweep] * self.channels).astype(np.float32)
 
 
@@ -182,47 +182,6 @@ class ResamplerTester:
 
         ax.legend(loc='upper right', fontsize=9)
 
-        # Measure key metrics
-        passband_idx = np.argmax(freqs > cutoff * 0.5)
-        cutoff_idx = np.argmax(freqs > cutoff)
-        stopband_idx = np.argmax(freqs > nyquist_in)
-
-        if stopband_idx < len(magnitude_db) and cutoff_idx > passband_idx:
-            passband_ripple = np.ptp(magnitude_db[passband_idx:cutoff_idx])
-            passband_max = np.max(magnitude_db[passband_idx:cutoff_idx])
-            stopband_peak = np.max(magnitude_db[stopband_idx:])
-            attenuation = passband_max - stopband_peak
-
-            # Determine if filter is working properly (Kaiser beta=10 should give ~100 dB attenuation)
-            if attenuation < 50:
-                status = '❌ BROKEN'
-                box_color = 'red'
-            elif attenuation < 80:
-                status = '⚠️ POOR'
-                box_color = 'orange'
-            else:
-                status = '✓ GOOD'
-                box_color = 'lightgreen'
-
-            metrics_text = f'{status}\n'
-            metrics_text += f'Passband peak: {passband_max:.1f} dB\n'
-            metrics_text += f'Stopband peak: {stopband_peak:.1f} dB\n'
-            metrics_text += f'Attenuation: {attenuation:.1f} dB\n'
-            metrics_text += f'Expected: ~100 dB'
-
-            ax.text(0.02, 0.05, metrics_text, transform=ax.transAxes,
-                    verticalalignment='bottom', fontsize=9, fontfamily='monospace',
-                    bbox=dict(boxstyle='round', facecolor=box_color, alpha=0.8))
-        elif stopband_idx < len(magnitude_db):
-            # Just show stopband if passband measurement fails
-            stopband_peak = np.max(magnitude_db[stopband_idx:])
-
-            metrics_text = f'Stopband peak: {stopband_peak:.1f} dB'
-
-            ax.text(0.02, 0.05, metrics_text, transform=ax.transAxes,
-                    verticalalignment='bottom', fontsize=9, fontfamily='monospace',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-
         # Detailed filter analysis
         print(f"✓ Analyzed filter frequency response:")
         print(f"  Input rate: {self.input_rate} Hz, Output rate: {self.output_rate} Hz")
@@ -272,32 +231,17 @@ class ResamplerTester:
             # Calculate attenuation relative to passband
             attenuation = passband_max - stopband_max if passband_end_idx > 10 else -stopband_max
 
-            # Determine status
-            if attenuation < 50:
-                status = "❌ BROKEN"
-            elif attenuation < 80:
-                status = "⚠️  POOR"
-            else:
-                status = "✓  GOOD"
-
-            print(f"\n  STOPBAND ({stopband_start_freq:.0f} Hz to {rate/2:.0f} Hz): {status}")
+            print(f"\n  STOPBAND ({stopband_start_freq:.0f} Hz to {rate/2:.0f} Hz)")
             print(f"    - Peak level: {stopband_max:.2f} dB")
             print(f"    - Min level: {stopband_min:.2f} dB")
             print(f"    - Ripple: {stopband_ripple:.2f} dB")
             print(f"    - Mean level: {stopband_mean:.2f} dB")
-            print(f"    - Attenuation: {attenuation:.2f} dB (Expected: ~100 dB)")
-
-            if attenuation < 50:
-                print(f"    ❌ CRITICAL: Stopband attenuation is BROKEN! Should be ~100 dB!")
-            elif attenuation < 80:
-                print(f"    ⚠️  WARNING: Stopband attenuation is below expected performance!")
+            print(f"    - Attenuation: {attenuation:.2f} dB")
 
             # Check for ripple pattern (should see oscillations in stopband)
             # Calculate standard deviation as measure of ripple
             stopband_std = np.std(stopband_magnitudes)
             print(f"    - Ripple std dev: {stopband_std:.2f} dB")
-            if stopband_std < 0.5:
-                print(f"    ⚠️  WARNING: Low ripple variance suggests flat/constant response!")
 
         print()
 
@@ -328,7 +272,7 @@ class ResamplerTester:
         # Plot spectrogram
         Sxx_db = 10 * np.log10(Sxx + 1e-10)
         im = ax.pcolormesh(t, f / 1000, Sxx_db, shading='gouraud',
-                           cmap='viridis', vmin=-80, vmax=0)
+                           cmap='turbo', vmin=-80, vmax=0)
 
         ax.set_xlabel('Time (s)', fontsize=11)
         ax.set_ylabel('Frequency (kHz)', fontsize=11)

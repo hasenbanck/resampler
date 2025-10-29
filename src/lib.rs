@@ -27,11 +27,15 @@
 //! ### FIR-Based Resampler (Low Latency, Streaming)
 //!
 //! ```rust
-//! use resampler::{Latency, ResamplerFir, SampleRate};
+//! use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
 //!
 //! // Create a stereo resampler with configurable latency (16, 32, or 64 samples).
-//! let mut resampler =
-//!     ResamplerFir::<2>::new(SampleRate::Hz48000, SampleRate::Hz44100, Latency::_32);
+//! let mut resampler = ResamplerFir::<2>::new(
+//!     SampleRate::Hz48000,
+//!     SampleRate::Hz44100,
+//!     Latency::Sample64,
+//!     Attenuation::Db90,
+//! );
 //!
 //! // Streaming API - accepts arbitrary input buffer sizes.
 //! let input = vec![0.0f32; 512];
@@ -147,7 +151,7 @@ mod window;
 pub use error::ResampleError;
 pub(crate) use fft::*;
 pub use resampler_fft::*;
-pub use resampler_fir::{Latency, ResamplerFir};
+pub use resampler_fir::{Attenuation, Latency, ResamplerFir};
 
 /// All sample rates the resampler can operate on.
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Ord, Eq, Hash)]

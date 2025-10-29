@@ -7,5 +7,6 @@ edition = "2024"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 hound = "3"
 resampler = { path = ".." }
