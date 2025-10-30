@@ -1,23 +1,25 @@
-use core::arch::x86_64::*;
-
+#[cfg(any(not(feature = "no_std"), target_feature = "sse"))]
 use crate::Complex32;
 
 /// Pure SSE implementation: processes 2 columns at once.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "sse",
-    any(not(target_feature = "sse3"), test)
+#[cfg(any(
+    test,
+    not(feature = "no_std"),
+    all(target_feature = "sse", not(target_feature = "sse3"))
 ))]
 #[target_feature(enable = "sse")]
 pub(super) unsafe fn butterfly_4_sse(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 2) * 2;
+    use core::arch::x86_64::*;
 
-    for idx in (0..simd_cols).step_by(2) {
-        unsafe {
+    unsafe {
+        let simd_cols = ((num_columns - start_col) / 2) * 2;
+
+        for idx in (start_col..start_col + simd_cols).step_by(2) {
             // Load 2 complex numbers from each row.
             // Layout: [x0[0].re, x0[0].im, x0[1].re, x0[1].im]
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
@@ -130,23 +132,26 @@ pub(super) unsafe fn butterfly_4_sse(
             let y3_ptr = data.as_mut_ptr().add(idx + 3 * num_columns) as *mut f32;
             _mm_storeu_ps(y3_ptr, y3);
         }
-    }
 
-    super::butterfly_4_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        super::butterfly_4_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
+    }
 }
 
 /// SSE3 implementation: processes 2 columns at once.
-#[cfg(all(target_arch = "x86_64", target_feature = "sse3"))]
+#[cfg(any(not(feature = "no_std"), target_feature = "sse3"))]
 #[target_feature(enable = "sse3")]
 pub(super) unsafe fn butterfly_4_sse3(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 2) * 2;
+    use core::arch::x86_64::*;
 
-    for idx in (0..simd_cols).step_by(2) {
-        unsafe {
+    unsafe {
+        let simd_cols = ((num_columns - start_col) / 2) * 2;
+
+        for idx in (start_col..start_col + simd_cols).step_by(2) {
             // Load 2 complex numbers from each row.
             // Layout: [x0[0].re, x0[0].im, x0[1].re, x0[1].im]
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
@@ -250,7 +255,7 @@ pub(super) unsafe fn butterfly_4_sse3(
             let y3_ptr = data.as_mut_ptr().add(idx + 3 * num_columns) as *mut f32;
             _mm_storeu_ps(y3_ptr, y3);
         }
-    }
 
-    super::butterfly_4_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        super::butterfly_4_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
+    }
 }

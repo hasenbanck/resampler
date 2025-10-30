@@ -1,19 +1,20 @@
-#[cfg(target_arch = "aarch64")]
-use core::arch::aarch64::*;
-
 use crate::Complex32;
+
 /// NEON implementation: processes 2 columns at once using vld1q/vst1q.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-pub(super) unsafe fn butterfly_4_neon_x2(
+pub(super) unsafe fn butterfly_4_neon(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
-    unsafe {
-        let simd_cols = (num_columns / 2) * 2;
+    use core::arch::aarch64::*;
 
-        for idx in (0..simd_cols).step_by(2) {
+    unsafe {
+        let simd_cols = ((num_columns - start_col) / 2) * 2;
+
+        for idx in (start_col..start_col + simd_cols).step_by(2) {
             // Load 2 complex numbers (4 f32) from each row as interleaved
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
             let x0 = vld1q_f32(x0_ptr);
@@ -134,6 +135,6 @@ pub(super) unsafe fn butterfly_4_neon_x2(
             vst1q_f32(y3_ptr, y3_interleaved.0);
         }
 
-        super::butterfly_4_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        super::butterfly_4_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
     }
 }

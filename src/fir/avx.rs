@@ -1,20 +1,20 @@
 //! AVX and AVX+FMA optimized FIR convolution implementations.
 
-#[cfg(target_arch = "x86_64")]
-use core::arch::x86_64::*;
-
 /// AVX implementation of FIR convolution (dot product) without FMA.
-///
-/// Uses 256-bit SIMD registers to process 8 f32 values at a time with separate multiply and add.
-/// For a 64-tap filter, this performs 8 iterations instead of 64.
-/// Slightly slower than AVX+FMA due to separate multiply and add operations.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx",
-    not(target_feature = "fma")
+#[cfg(any(
+    all(
+        target_arch = "x86_64",
+        target_feature = "avx",
+        not(target_feature = "avx512f"),
+        not(target_feature = "fma"),
+        feature = "no_std"
+    ),
+    not(feature = "no_std")
 ))]
 #[target_feature(enable = "avx")]
-pub(super) unsafe fn convolve_avx(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
+pub(crate) unsafe fn convolve_avx(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
+    use core::arch::x86_64::*;
+
     unsafe {
         const SIMD_WIDTH: usize = 8;
         let simd_iterations = taps / SIMD_WIDTH;
@@ -53,12 +53,20 @@ pub(super) unsafe fn convolve_avx(input: &[f32], coeffs: &[f32], taps: usize) ->
 }
 
 /// AVX+FMA implementation of FIR convolution (dot product).
-///
-/// Uses 256-bit SIMD registers to process 8 f32 values at a time with fused multiply-add.
-/// For a 64-tap filter, this performs 8 iterations instead of 64.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
+#[cfg(any(
+    all(
+        target_arch = "x86_64",
+        target_feature = "avx",
+        target_feature = "fma",
+        not(target_feature = "avx512f"),
+        feature = "no_std"
+    ),
+    not(feature = "no_std")
+))]
 #[target_feature(enable = "avx,fma")]
-pub(super) unsafe fn convolve_avx_fma(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
+pub(crate) unsafe fn convolve_avx_fma(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
+    use core::arch::x86_64::*;
+
     unsafe {
         const SIMD_WIDTH: usize = 8;
         let simd_iterations = taps / SIMD_WIDTH;

@@ -1,30 +1,11 @@
 use crate::Complex32;
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+#[cfg(target_arch = "x86_64")]
 mod avx;
 #[cfg(target_arch = "aarch64")]
 mod neon;
-#[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
+#[cfg(target_arch = "x86_64")]
 mod sse;
-
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx",
-    any(not(target_feature = "fma"), test)
-))]
-use avx::butterfly_7_avx;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
-use avx::butterfly_7_avx_fma;
-#[cfg(target_arch = "aarch64")]
-use neon::butterfly_7_neon;
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "sse",
-    any(not(target_feature = "sse3"), test)
-))]
-use sse::butterfly_7_sse;
-#[cfg(all(target_arch = "x86_64", target_feature = "sse3"))]
-use sse::butterfly_7_sse3;
 
 // Primitive 7th roots of unity: W_7 = exp(-2πi/7)
 pub(super) const W7_1_RE: f32 = 0.6234898; // cos(-2π/7)
@@ -40,17 +21,21 @@ pub(super) const W7_5_IM: f32 = 0.9749279; // sin(-10π/7)
 pub(super) const W7_6_RE: f32 = 0.6234898; // cos(-12π/7)
 pub(super) const W7_6_IM: f32 = 0.7818315; // sin(-12π/7)
 
-/// Helper function to process a range of columns for radix-7 butterfly.
-/// Processes columns from `start_col` to `end_col` (exclusive).
+/// Processes a single radix-7 butterfly stage across all columns using scalar operations.
+///
+/// Implements the radix-7 DFT butterfly:
+/// X[k] = sum_{j=0}^{6} x[j] * W_stage[j] * W_7^(k*j)
+///
+/// Where W_7 = exp(-2πi/7) is the primitive 7th root of unity, and
+/// W_stage are the stage-specific twiddle factors.
 #[inline(always)]
-pub(super) fn butterfly_7_columns(
+pub(super) fn butterfly_7_scalar(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    num_columns: usize,
     start_col: usize,
-    end_col: usize,
+    num_columns: usize,
 ) {
-    for idx in start_col..end_col {
+    for idx in start_col..num_columns {
         let x0 = data[idx];
         let x1 = data[idx + num_columns];
         let x2 = data[idx + 2 * num_columns];
@@ -282,24 +267,9 @@ pub(super) fn butterfly_7_columns(
     }
 }
 
-/// Processes a single radix-7 butterfly stage across all columns using scalar operations.
-///
-/// Implements the radix-7 DFT butterfly:
-/// X[k] = sum_{j=0}^{6} x[j] * W_stage[j] * W_7^(k*j)
-///
-/// Where W_7 = exp(-2πi/7) is the primitive 7th root of unity, and
-/// W_stage are the stage-specific twiddle factors.
+/// Dispatches to the best available SIMD implementation.
 #[inline(always)]
-pub fn butterfly_7_scalar(
-    data: &mut [Complex32],
-    stage_twiddles: &[Complex32],
-    num_columns: usize,
-) {
-    butterfly_7_columns(data, stage_twiddles, num_columns, 0, num_columns);
-}
-
-#[inline(always)]
-pub(crate) fn butterfly_7(
+pub(crate) fn butterfly_7_dispatch(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
     num_columns: usize,
@@ -307,9 +277,7 @@ pub(crate) fn butterfly_7(
     #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
     {
         if num_columns >= 4 {
-            unsafe {
-                return butterfly_7_avx_fma(data, stage_twiddles, num_columns);
-            }
+            return unsafe { avx::butterfly_7_avx_fma(data, stage_twiddles, 0, num_columns) };
         }
     }
 
@@ -320,44 +288,100 @@ pub(crate) fn butterfly_7(
     ))]
     {
         if num_columns >= 4 {
-            unsafe {
-                return butterfly_7_avx(data, stage_twiddles, num_columns);
-            }
+            return unsafe { avx::butterfly_7_avx(data, stage_twiddles, 0, num_columns) };
         }
     }
 
     #[cfg(all(target_arch = "x86_64", target_feature = "sse3"))]
     {
         if num_columns >= 2 {
-            unsafe {
-                return butterfly_7_sse3(data, stage_twiddles, num_columns);
-            }
+            return unsafe { sse::butterfly_7_sse3(data, stage_twiddles, 0, num_columns) };
         }
     }
 
     #[cfg(all(
         target_arch = "x86_64",
-        not(target_feature = "sse3"),
-        target_feature = "sse"
+        target_feature = "sse",
+        not(target_feature = "sse3")
     ))]
     {
         if num_columns >= 2 {
-            unsafe {
-                return butterfly_7_sse(data, stage_twiddles, num_columns);
-            }
+            return unsafe { sse::butterfly_7_sse(data, stage_twiddles, 0, num_columns) };
         }
     }
 
     #[cfg(target_arch = "aarch64")]
     {
         if num_columns >= 2 {
-            unsafe {
-                return butterfly_7_neon(data, stage_twiddles, num_columns);
-            }
+            return unsafe { neon::butterfly_7_neon(data, stage_twiddles, 0, num_columns) };
         }
     }
 
-    butterfly_7_scalar(data, stage_twiddles, num_columns);
+    butterfly_7_scalar(data, stage_twiddles, 0, num_columns);
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+#[inline(always)]
+pub(crate) fn butterfly_7_dispatch_avx_fma(
+    data: &mut [Complex32],
+    stage_twiddles: &[Complex32],
+    num_columns: usize,
+) {
+    if num_columns >= 4 {
+        return unsafe { avx::butterfly_7_avx_fma(data, stage_twiddles, 0, num_columns) };
+    }
+
+    if num_columns >= 2 {
+        return unsafe { sse::butterfly_7_sse3(data, stage_twiddles, 0, num_columns) };
+    }
+
+    butterfly_7_scalar(data, stage_twiddles, 0, num_columns);
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+#[inline(always)]
+pub(crate) fn butterfly_7_dispatch_avx(
+    data: &mut [Complex32],
+    stage_twiddles: &[Complex32],
+    num_columns: usize,
+) {
+    if num_columns >= 4 {
+        return unsafe { avx::butterfly_7_avx(data, stage_twiddles, 0, num_columns) };
+    }
+
+    if num_columns >= 2 {
+        return unsafe { sse::butterfly_7_sse3(data, stage_twiddles, 0, num_columns) };
+    }
+
+    butterfly_7_scalar(data, stage_twiddles, 0, num_columns);
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+#[inline(always)]
+pub(crate) fn butterfly_7_dispatch_sse3(
+    data: &mut [Complex32],
+    stage_twiddles: &[Complex32],
+    num_columns: usize,
+) {
+    if num_columns >= 2 {
+        return unsafe { sse::butterfly_7_sse3(data, stage_twiddles, 0, num_columns) };
+    }
+
+    butterfly_7_scalar(data, stage_twiddles, 0, num_columns);
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+#[inline(always)]
+pub(crate) fn butterfly_7_dispatch_sse(
+    data: &mut [Complex32],
+    stage_twiddles: &[Complex32],
+    num_columns: usize,
+) {
+    if num_columns >= 2 {
+        return unsafe { sse::butterfly_7_sse(data, stage_twiddles, 0, num_columns) };
+    }
+
+    butterfly_7_scalar(data, stage_twiddles, 0, num_columns);
 }
 
 #[cfg(test)]
@@ -368,9 +392,9 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     fn test_butterfly_7_neon_vs_scalar() {
         test_butterfly_against_scalar(
-            butterfly_7_scalar,
+            |data, twiddles, num_columns| butterfly_7_scalar(data, twiddles, 0, num_columns),
             |data, twiddles, num_columns| unsafe {
-                butterfly_7_neon(data, twiddles, num_columns);
+                neon::butterfly_7_neon(data, twiddles, 0, num_columns);
             },
             7,
             6,
@@ -379,12 +403,15 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(not(feature = "no_std"), target_feature = "sse")
+    ))]
     fn test_butterfly_7_sse_vs_scalar() {
         test_butterfly_against_scalar(
-            butterfly_7_scalar,
+            |data, twiddles, num_columns| butterfly_7_scalar(data, twiddles, 0, num_columns),
             |data, twiddles, num_columns| unsafe {
-                butterfly_7_sse(data, twiddles, num_columns);
+                sse::butterfly_7_sse(data, twiddles, 0, num_columns);
             },
             7,
             6,
@@ -393,12 +420,15 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse3"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(not(feature = "no_std"), target_feature = "sse3")
+    ))]
     fn test_butterfly_7_sse3_vs_scalar() {
         test_butterfly_against_scalar(
-            butterfly_7_scalar,
+            |data, twiddles, num_columns| butterfly_7_scalar(data, twiddles, 0, num_columns),
             |data, twiddles, num_columns| unsafe {
-                butterfly_7_sse3(data, twiddles, num_columns);
+                sse::butterfly_7_sse3(data, twiddles, 0, num_columns);
             },
             7,
             6,
@@ -407,12 +437,15 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(not(feature = "no_std"), target_feature = "avx")
+    ))]
     fn test_butterfly_7_avx_vs_scalar() {
         test_butterfly_against_scalar(
-            butterfly_7_scalar,
+            |data, twiddles, num_columns| butterfly_7_scalar(data, twiddles, 0, num_columns),
             |data, twiddles, num_columns| unsafe {
-                butterfly_7_avx(data, twiddles, num_columns);
+                avx::butterfly_7_avx(data, twiddles, 0, num_columns);
             },
             7,
             6,
@@ -421,12 +454,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(
+            not(feature = "no_std"),
+            all(target_feature = "avx", target_feature = "fma")
+        )
+    ))]
     fn test_butterfly_7_avx_fma_vs_scalar() {
         test_butterfly_against_scalar(
-            butterfly_7_scalar,
+            |data, twiddles, num_columns| butterfly_7_scalar(data, twiddles, 0, num_columns),
             |data, twiddles, num_columns| unsafe {
-                butterfly_7_avx_fma(data, twiddles, num_columns);
+                avx::butterfly_7_avx_fma(data, twiddles, 0, num_columns);
             },
             7,
             6,

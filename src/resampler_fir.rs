@@ -8,7 +8,6 @@ use std::{
 
 use crate::{
     ResampleError, SampleRate,
-    fir::convolve,
     window::{WindowType, calculate_cutoff_kaiser, make_sincs_for_kaiser},
 };
 
@@ -131,6 +130,7 @@ pub struct ResamplerFir<const CHANNEL: usize> {
     taps: usize,
     /// Number of polyphase branches.
     phases: usize,
+    convolve_function: fn(input: &[f32], coeffs: &[f32], taps: usize) -> f32,
 }
 
 impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
@@ -195,6 +195,38 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         let input_buffers: [Box<[f32]>; CHANNEL] =
             array::from_fn(|_| vec![0.0; INPUT_CAPACITY].into_boxed_slice());
 
+        #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+        let convolve_function = if std::arch::is_x86_feature_detected!("avx512f") {
+            fn wrapper(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
+                unsafe { crate::fir::avx512::convolve_avx512(input, coeffs, taps) }
+            }
+            wrapper
+        } else if std::arch::is_x86_feature_detected!("avx")
+            && std::arch::is_x86_feature_detected!("fma")
+        {
+            fn wrapper(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
+                unsafe { crate::fir::avx::convolve_avx_fma(input, coeffs, taps) }
+            }
+            wrapper
+        } else if std::arch::is_x86_feature_detected!("avx") {
+            fn wrapper(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
+                unsafe { crate::fir::avx::convolve_avx(input, coeffs, taps) }
+            }
+            wrapper
+        } else if std::arch::is_x86_feature_detected!("sse3") {
+            fn wrapper(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
+                unsafe { crate::fir::sse::convolve_sse3(input, coeffs, taps) }
+            }
+            wrapper
+        } else if std::arch::is_x86_feature_detected!("sse") {
+            fn wrapper(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
+                unsafe { crate::fir::sse::convolve_sse(input, coeffs, taps) }
+            }
+            wrapper
+        } else {
+            crate::fir::convolve_scalar
+        };
+
         ResamplerFir {
             coeffs,
             input_buffers,
@@ -203,6 +235,10 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
             ratio,
             taps,
             phases: PHASES,
+            #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+            convolve_function,
+            #[cfg(any(not(target_arch = "x86_64"), feature = "no_std"))]
+            convolve_function: crate::fir::convolve,
         }
     }
 
@@ -357,8 +393,10 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
             for channel in 0..CHANNEL {
                 // Perform N-tap convolution with linear interpolation between phases.
                 let input_slice = &self.input_buffers[channel][input_pos..input_pos + self.taps];
-                let sample1 = convolve(input_slice, &self.coeffs[phase1], self.taps);
-                let sample2 = convolve(input_slice, &self.coeffs[phase2], self.taps);
+                let sample1 =
+                    (self.convolve_function)(input_slice, &self.coeffs[phase1], self.taps);
+                let sample2 =
+                    (self.convolve_function)(input_slice, &self.coeffs[phase2], self.taps);
                 let sample = sample1 * (1.0 - frac) + sample2 * frac;
                 output[output_frame_count * CHANNEL + channel] = sample;
             }

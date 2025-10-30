@@ -1,20 +1,22 @@
-use core::arch::x86_64::*;
-
+#[cfg(any(not(feature = "no_std"), target_feature = "sse"))]
 use crate::Complex32;
 
 /// Pure SSE implementation: processes 2 columns at once.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "sse",
-    any(not(target_feature = "sse3"), test)
+#[cfg(any(
+    test,
+    not(feature = "no_std"),
+    all(target_feature = "sse", not(target_feature = "sse3"))
 ))]
 #[target_feature(enable = "sse")]
 pub(super) unsafe fn butterfly_3_sse(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 2) * 2;
+    use core::arch::x86_64::*;
+
+    let simd_cols = ((num_columns - start_col) / 2) * 2;
 
     // Broadcast W3 constants for SIMD operations.
     let w3_1_re = _mm_set1_ps(super::W3_1_RE);
@@ -22,7 +24,7 @@ pub(super) unsafe fn butterfly_3_sse(
     let w3_2_re = _mm_set1_ps(super::W3_2_RE);
     let w3_2_im = _mm_set1_ps(super::W3_2_IM);
 
-    for idx in (0..simd_cols).step_by(2) {
+    for idx in (start_col..start_col + simd_cols).step_by(2) {
         unsafe {
             // Load 2 complex numbers from each row.
             // Layout: [x0[0].re, x0[0].im, x0[1].re, x0[1].im]
@@ -128,18 +130,21 @@ pub(super) unsafe fn butterfly_3_sse(
         }
     }
 
-    super::butterfly_3_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+    super::butterfly_3_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
 }
 
 /// SSE3 implementation: processes 2 columns at once.
-#[cfg(all(target_arch = "x86_64", target_feature = "sse3"))]
+#[cfg(any(not(feature = "no_std"), target_feature = "sse3"))]
 #[target_feature(enable = "sse3")]
 pub(super) unsafe fn butterfly_3_sse3(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 2) * 2;
+    use core::arch::x86_64::*;
+
+    let simd_cols = ((num_columns - start_col) / 2) * 2;
 
     // Broadcast W3 constants for SIMD operations.
     let w3_1_re = _mm_set1_ps(super::W3_1_RE);
@@ -147,7 +152,7 @@ pub(super) unsafe fn butterfly_3_sse3(
     let w3_2_re = _mm_set1_ps(super::W3_2_RE);
     let w3_2_im = _mm_set1_ps(super::W3_2_IM);
 
-    for idx in (0..simd_cols).step_by(2) {
+    for idx in (start_col..start_col + simd_cols).step_by(2) {
         unsafe {
             // Load 2 complex numbers from each row.
             // Layout: [x0[0].re, x0[0].im, x0[1].re, x0[1].im]
@@ -245,5 +250,5 @@ pub(super) unsafe fn butterfly_3_sse3(
         }
     }
 
-    super::butterfly_3_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+    super::butterfly_3_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
 }

@@ -1,22 +1,24 @@
-use core::arch::x86_64::*;
-
+#[cfg(any(not(feature = "no_std"), target_feature = "sse"))]
 use crate::Complex32;
 
 /// Pure SSE implementation: processes 2 columns at once.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "sse",
-    any(not(target_feature = "sse3"), test)
+#[cfg(any(
+    test,
+    not(feature = "no_std"),
+    all(target_feature = "sse", not(target_feature = "sse3"))
 ))]
 #[target_feature(enable = "sse")]
 pub(super) unsafe fn butterfly_2_sse(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 2) * 2;
+    use core::arch::x86_64::*;
 
-    for idx in (0..simd_cols).step_by(2) {
+    let simd_cols = ((num_columns - start_col) / 2) * 2;
+
+    for idx in (start_col..start_col + simd_cols).step_by(2) {
         unsafe {
             // Load 2 complex numbers from data[idx] and data[idx+1]
             // Layout: [u0.re, u0.im, u1.re, u1.im]
@@ -74,20 +76,23 @@ pub(super) unsafe fn butterfly_2_sse(
         }
     }
 
-    super::butterfly_2_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+    super::butterfly_2_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
 }
 
 /// SSE3 implementation: processes 2 columns at once.
-#[cfg(all(target_arch = "x86_64", target_feature = "sse3"))]
+#[cfg(any(not(feature = "no_std"), target_feature = "sse3"))]
 #[target_feature(enable = "sse3")]
 pub(super) unsafe fn butterfly_2_sse3(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 2) * 2;
+    use core::arch::x86_64::*;
 
-    for idx in (0..simd_cols).step_by(2) {
+    let simd_cols = ((num_columns - start_col) / 2) * 2;
+
+    for idx in (start_col..start_col + simd_cols).step_by(2) {
         unsafe {
             // Load 2 complex numbers from data[idx] and data[idx+1]
             // Layout: [u0.re, u0.im, u1.re, u1.im]
@@ -135,5 +140,5 @@ pub(super) unsafe fn butterfly_2_sse3(
         }
     }
 
-    super::butterfly_2_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+    super::butterfly_2_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
 }

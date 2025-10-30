@@ -73,8 +73,7 @@
 //! audio resampling. Key technical details:
 //!
 //! - Custom mixed-radix FFT with the standard Cooley-Tukey algorithm.
-//! - SIMD optimizations: All butterflies have SSE, AVX, and ARM NEON implementations with compile
-//!   time CPU feature detection.
+//! - SIMD optimizations: All butterflies have SSE, SSE3, AVX, and ARM NEON implementations.
 //! - Real-valued FFT: Exploits conjugate symmetry for 2x performance.
 //! - Kaiser window: Beta parameter of 10.0 provides excellent stopband attenuation of -100 dB while
 //!   maintaining good time-domain localization.
@@ -87,19 +86,18 @@
 //! resampling with low latency. Key technical details:
 //!
 //! - Polyphase decomposition: 1024 phases with linear interpolation between phases.
-//! - SIMD optimizations: Convolution kernels optimized with SSE, AVX, and ARM NEON.
+//! - SIMD optimizations: Convolution kernels optimized with SSE, SSE3, AVX, AVX-512, and ARM NEON.
 //! - Configurable filter length: 32, 64, or 128 taps (16, 32, or 64 samples latency).
 //! - Kaiser windowing: Beta parameter of 10.0 provides -90 dB stopband attenuation.
 //! - Streaming API: Accepts arbitrary input buffer sizes for flexible real-time processing.
 //!
 //! ## Performance
 //!
-//! Both resamplers include SIMD optimizations for maximum performance:
+//! Both resamplers include SIMD optimizations with runtime CPU feature detection for maximum
+//! performance and compatibility.
 //!
-//! - SSE on x86_64 and NEON on aarch64 are enabled by default.
-//! - For best performance on x86_64, enable AVX (+avx) and FMA (+fma) as target features at compile
-//!   time.
-//! - FFT butterflies and FIR convolution kernels are both fully optimized with SIMD instructions.
+//! But for up to 25% better performance on x86_64, compile with `target-cpu=x86-64-v3`
+//! (enables AVX2, FMA, and other optimizations).
 //!
 //! ## no-std Compatibility
 //!
@@ -117,6 +115,9 @@
 //!
 //! - Caching: The library will not cache FFT and FIR objects globally to shorten resampler creation
 //!   time and lower overall memory consumption for multiple resamplers.
+//!
+//! - No runtime detection of SIMD functionality. You need to activate SIMD via compile time target
+//!   features.
 //!
 //! The default build (without `no_std` feature) has zero dependencies and uses the standard
 //! library for optimal performance and memory efficiency through global caching.

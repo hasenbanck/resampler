@@ -1,23 +1,25 @@
-use core::arch::x86_64::*;
-
+#[cfg(any(test, not(feature = "no_std"), target_feature = "avx"))]
 use crate::Complex32;
 
 /// AVX implementation: processes 4 columns at once.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx",
-    any(not(target_feature = "fma"), test)
+#[cfg(any(
+    test,
+    not(feature = "no_std"),
+    all(target_feature = "avx", not(target_feature = "fma"))
 ))]
 #[target_feature(enable = "avx")]
 pub(super) unsafe fn butterfly_2_avx(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 4) * 4;
+    use core::arch::x86_64::*;
 
-    for idx in (0..simd_cols).step_by(4) {
-        unsafe {
+    unsafe {
+        let simd_cols = ((num_columns - start_col) / 4) * 4;
+
+        for idx in (start_col..start_col + simd_cols).step_by(4) {
             let u_ptr = data.as_ptr().add(idx) as *const f32;
             let u = _mm256_loadu_ps(u_ptr);
 
@@ -49,23 +51,29 @@ pub(super) unsafe fn butterfly_2_avx(
             let out_bot_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
             _mm256_storeu_ps(out_bot_ptr, out_bot);
         }
-    }
 
-    super::butterfly_2_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        super::butterfly_2_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
+    }
 }
 
 /// AVX+FMA implementation: processes 4 columns at once using fused multiply-add.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
+#[cfg(any(
+    not(feature = "no_std"),
+    all(target_feature = "avx", target_feature = "fma")
+))]
 #[target_feature(enable = "avx,fma")]
 pub(super) unsafe fn butterfly_2_avx_fma(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
-    let simd_cols = (num_columns / 4) * 4;
+    use core::arch::x86_64::*;
 
-    for idx in (0..simd_cols).step_by(4) {
-        unsafe {
+    unsafe {
+        let simd_cols = ((num_columns - start_col) / 4) * 4;
+
+        for idx in (start_col..start_col + simd_cols).step_by(4) {
             let u_ptr = data.as_ptr().add(idx) as *const f32;
             let u = _mm256_loadu_ps(u_ptr);
             let d_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
@@ -96,7 +104,7 @@ pub(super) unsafe fn butterfly_2_avx_fma(
             let out_bot_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
             _mm256_storeu_ps(out_bot_ptr, out_bot);
         }
-    }
 
-    super::butterfly_2_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        super::butterfly_2_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
+    }
 }
