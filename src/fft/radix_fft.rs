@@ -2,8 +2,8 @@ use alloc::{vec, vec::Vec};
 use core::{f64, marker::PhantomData, slice};
 
 use super::butterflies::{
-    butterfly_2, butterfly_3, butterfly_4, butterfly_5, butterfly_7, cooley_tukey_radix_2,
-    cooley_tukey_radix_n,
+    butterfly_2_dispatch, butterfly_3_dispatch, butterfly_4_dispatch, butterfly_5_dispatch,
+    butterfly_7_dispatch,
 };
 use crate::Complex32;
 
@@ -41,6 +41,9 @@ pub struct Forward;
 /// Marker type for inverse FFT direction.
 pub struct Inverse;
 
+type CooleyTukeyRadix2Fn = fn(&mut [Complex32], &[Complex32], &[Radix]);
+type CooleyTukeyRadixNFn = fn(&mut [Complex32], &[Complex32], &[Radix], &[usize], &mut [Complex32]);
+
 /// Mixed-radix FFT for real values.
 ///
 /// Generic over direction type (`Forward` or `Inverse`).
@@ -64,6 +67,8 @@ pub struct RadixFFT<D> {
     real_complex_expansion_twiddles: Vec<Complex32>,
     complex_real_reduction_twiddles: Vec<Complex32>,
     is_pure_radix2: bool,
+    cooley_tukey_radix_2: CooleyTukeyRadix2Fn,
+    cooley_tukey_radix_n: CooleyTukeyRadixNFn,
     _direction: PhantomData<D>,
 }
 
@@ -111,6 +116,39 @@ impl<D> RadixFFT<D> {
         let real_complex_expansion_twiddles = Self::compute_real_complex_expansion_twiddles(n);
         let complex_real_reduction_twiddles = Self::compute_complex_real_reduction_twiddles(n);
 
+        #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+        let (cooley_tukey_radix_2, cooley_tukey_radix_n): (
+            CooleyTukeyRadix2Fn,
+            CooleyTukeyRadixNFn,
+        ) = if std::arch::is_x86_feature_detected!("avx")
+            && std::arch::is_x86_feature_detected!("fma")
+        {
+            (
+                super::cooley_tukey_radix2::cooley_tukey_radix_2_avx_fma,
+                super::cooley_tukey_radixn::cooley_tukey_radix_n_avx_fma,
+            )
+        } else if std::arch::is_x86_feature_detected!("avx") {
+            (
+                super::cooley_tukey_radix2::cooley_tukey_radix_2_avx,
+                super::cooley_tukey_radixn::cooley_tukey_radix_n_avx,
+            )
+        } else if std::arch::is_x86_feature_detected!("sse3") {
+            (
+                super::cooley_tukey_radix2::cooley_tukey_radix_2_sse3,
+                super::cooley_tukey_radixn::cooley_tukey_radix_n_sse3,
+            )
+        } else if std::arch::is_x86_feature_detected!("sse") {
+            (
+                super::cooley_tukey_radix2::cooley_tukey_radix_2_sse,
+                super::cooley_tukey_radixn::cooley_tukey_radix_n_sse,
+            )
+        } else {
+            (
+                super::cooley_tukey_radix2::cooley_tukey_radix_2,
+                super::cooley_tukey_radixn::cooley_tukey_radix_n,
+            )
+        };
+
         Self {
             n,
             n2,
@@ -120,6 +158,14 @@ impl<D> RadixFFT<D> {
             real_complex_expansion_twiddles,
             complex_real_reduction_twiddles,
             is_pure_radix2,
+            #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+            cooley_tukey_radix_2,
+            #[cfg(any(not(target_arch = "x86_64"), feature = "no_std"))]
+            cooley_tukey_radix_2: super::cooley_tukey_radix2::cooley_tukey_radix_2,
+            #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+            cooley_tukey_radix_n,
+            #[cfg(any(not(target_arch = "x86_64"), feature = "no_std"))]
+            cooley_tukey_radix_n: super::cooley_tukey_radixn::cooley_tukey_radix_n,
             _direction: PhantomData,
         }
     }
@@ -291,7 +337,7 @@ impl<D> RadixFFT<D> {
         match factor {
             Radix::Factor2 => {
                 let twiddles = [Complex32::new(1.0, 0.0)];
-                butterfly_2(data, &twiddles, 1);
+                butterfly_2_dispatch(data, &twiddles, 1);
             }
             Radix::Factor4 => {
                 let twiddles = [
@@ -299,11 +345,11 @@ impl<D> RadixFFT<D> {
                     Complex32::new(1.0, 0.0),
                     Complex32::new(1.0, 0.0),
                 ];
-                butterfly_4(data, &twiddles, 1);
+                butterfly_4_dispatch(data, &twiddles, 1);
             }
             Radix::Factor3 => {
                 let twiddles = [Complex32::new(1.0, 0.0), Complex32::new(1.0, 0.0)];
-                butterfly_3(data, &twiddles, 1);
+                butterfly_3_dispatch(data, &twiddles, 1);
             }
             Radix::Factor5 => {
                 let twiddles = [
@@ -312,7 +358,7 @@ impl<D> RadixFFT<D> {
                     Complex32::new(1.0, 0.0),
                     Complex32::new(1.0, 0.0),
                 ];
-                butterfly_5(data, &twiddles, 1);
+                butterfly_5_dispatch(data, &twiddles, 1);
             }
             Radix::Factor7 => {
                 let twiddles = [
@@ -323,7 +369,7 @@ impl<D> RadixFFT<D> {
                     Complex32::new(1.0, 0.0),
                     Complex32::new(1.0, 0.0),
                 ];
-                butterfly_7(data, &twiddles, 1);
+                butterfly_7_dispatch(data, &twiddles, 1);
             }
         }
     }
@@ -346,10 +392,10 @@ impl<D> RadixFFT<D> {
             Self::apply_single_butterfly(data, self.factors[0]);
         } else if self.is_pure_radix2 {
             // Pure radix-2: use the optimized Cooley-Tukey algorithm.
-            cooley_tukey_radix_2(data, &self.twiddles, &self.factors);
+            (self.cooley_tukey_radix_2)(data, &self.twiddles, &self.factors);
         } else {
             // Mixed-radix: use the standard Cooley-Tukey algorithm.
-            cooley_tukey_radix_n(
+            (self.cooley_tukey_radix_n)(
                 data,
                 &self.twiddles,
                 &self.factors,
@@ -597,11 +643,11 @@ impl<D> RadixFFT<D> {
             Self::apply_single_butterfly(data, self.factors[0]);
         } else if self.is_pure_radix2 {
             // Pure radix-2: use optimized Cooley-Tukey algorithm
-            cooley_tukey_radix_2(data, &self.twiddles, &self.factors);
+            (self.cooley_tukey_radix_2)(data, &self.twiddles, &self.factors);
         } else {
             // Mixed-radix: use standard Cooley-Tukey algorithm
             // Use scratch_remainder as temporary buffer for permutation
-            cooley_tukey_radix_n(
+            (self.cooley_tukey_radix_n)(
                 data,
                 &self.twiddles,
                 &self.factors,

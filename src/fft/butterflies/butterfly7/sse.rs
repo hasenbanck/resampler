@@ -1,21 +1,23 @@
-use core::arch::x86_64::*;
-
+#[cfg(any(not(feature = "no_std"), target_feature = "sse"))]
 use crate::Complex32;
 
 /// Pure SSE implementation: processes 2 columns at once.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "sse",
-    any(not(target_feature = "sse3"), test)
+#[cfg(any(
+    test,
+    not(feature = "no_std"),
+    all(target_feature = "sse", not(target_feature = "sse3"))
 ))]
 #[target_feature(enable = "sse")]
 pub(super) unsafe fn butterfly_7_sse(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
+    use core::arch::x86_64::*;
+
     unsafe {
-        let simd_cols = (num_columns / 2) * 2;
+        let simd_cols = ((num_columns - start_col) / 2) * 2;
 
         // Broadcast W7 constants for SIMD operations.
         let w7_1_re = _mm_set1_ps(super::W7_1_RE);
@@ -39,7 +41,7 @@ pub(super) unsafe fn butterfly_7_sse(
             0x80000000u32 as i32,
         ));
 
-        for idx in (0..simd_cols).step_by(2) {
+        for idx in (start_col..start_col + simd_cols).step_by(2) {
             // Load 2 complex numbers from each row.
             // Layout: [x[0].re, x[0].im, x[1].re, x[1].im]
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
@@ -216,20 +218,23 @@ pub(super) unsafe fn butterfly_7_sse(
             _mm_storeu_ps(y6_ptr, y6);
         }
 
-        super::butterfly_7_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        super::butterfly_7_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
     }
 }
 
 /// SSE3 implementation: processes 2 columns at once.
-#[cfg(all(target_arch = "x86_64", target_feature = "sse3"))]
+#[cfg(any(not(feature = "no_std"), target_feature = "sse3"))]
 #[target_feature(enable = "sse3")]
 pub(super) unsafe fn butterfly_7_sse3(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
+    use core::arch::x86_64::*;
+
     unsafe {
-        let simd_cols = (num_columns / 2) * 2;
+        let simd_cols = ((num_columns - start_col) / 2) * 2;
 
         // Broadcast W7 constants for SIMD operations.
         let w7_1_re = _mm_set1_ps(super::W7_1_RE);
@@ -245,7 +250,7 @@ pub(super) unsafe fn butterfly_7_sse3(
         let w7_6_re = _mm_set1_ps(super::W7_6_RE);
         let w7_6_im = _mm_set1_ps(super::W7_6_IM);
 
-        for idx in (0..simd_cols).step_by(2) {
+        for idx in (start_col..start_col + simd_cols).step_by(2) {
             // Load 2 complex numbers from each row.
             // Layout: [x[0].re, x[0].im, x[1].re, x[1].im]
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
@@ -418,6 +423,6 @@ pub(super) unsafe fn butterfly_7_sse3(
             _mm_storeu_ps(y6_ptr, y6);
         }
 
-        super::butterfly_7_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        super::butterfly_7_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
     }
 }

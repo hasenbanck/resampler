@@ -1,6 +1,3 @@
-#[cfg(target_arch = "aarch64")]
-use core::arch::aarch64::*;
-
 use crate::Complex32;
 
 /// NEON implementation: processes 2 columns at once.
@@ -9,10 +6,13 @@ use crate::Complex32;
 pub(super) unsafe fn butterfly_5_neon(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
+    use core::arch::aarch64::*;
+
     unsafe {
-        let simd_cols = (num_columns / 2) * 2;
+        let simd_cols = ((num_columns - start_col) / 2) * 2;
 
         // Broadcast W5 constants for SIMD operations.
         let w5_1_re = vdupq_n_f32(super::W5_1_RE);
@@ -24,7 +24,7 @@ pub(super) unsafe fn butterfly_5_neon(
         let w5_4_re = vdupq_n_f32(super::W5_4_RE);
         let w5_4_im = vdupq_n_f32(super::W5_4_IM);
 
-        for idx in (0..simd_cols).step_by(2) {
+        for idx in (start_col..start_col + simd_cols).step_by(2) {
             // Load 2 complex numbers from each row.
             // Layout: [x0[0].re, x0[0].im, x0[1].re, x0[1].im]
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
@@ -294,6 +294,6 @@ pub(super) unsafe fn butterfly_5_neon(
             vst1q_f32(y4_ptr, y4);
         }
 
-        super::butterfly_5_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        super::butterfly_5_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
     }
 }

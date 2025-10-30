@@ -1,21 +1,23 @@
-use core::arch::x86_64::*;
-
+#[cfg(any(test, not(feature = "no_std"), target_feature = "avx"))]
 use crate::Complex32;
 
 /// AVX implementation: processes 4 columns at once.
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx",
-    any(not(target_feature = "fma"), test)
+#[cfg(any(
+    test,
+    not(feature = "no_std"),
+    all(target_feature = "avx", not(target_feature = "fma"))
 ))]
 #[target_feature(enable = "avx")]
 pub(super) unsafe fn butterfly_7_avx(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
+    use core::arch::x86_64::*;
+
     unsafe {
-        let simd_cols = (num_columns / 4) * 4;
+        let simd_cols = ((num_columns - start_col) / 4) * 4;
 
         // Broadcast W7 constants for SIMD operations.
         let w7_1_re = _mm256_set1_ps(super::W7_1_RE);
@@ -31,7 +33,7 @@ pub(super) unsafe fn butterfly_7_avx(
         let w7_6_re = _mm256_set1_ps(super::W7_6_RE);
         let w7_6_im = _mm256_set1_ps(super::W7_6_IM);
 
-        for idx in (0..simd_cols).step_by(4) {
+        for idx in (start_col..start_col + simd_cols).step_by(4) {
             // Load 4 complex numbers from each row.
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
             let x0 = _mm256_loadu_ps(x0_ptr);
@@ -211,20 +213,26 @@ pub(super) unsafe fn butterfly_7_avx(
             _mm256_storeu_ps(y6_ptr, y6);
         }
 
-        super::butterfly_7_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        super::butterfly_7_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
     }
 }
 
 /// AVX+FMA implementation: processes 4 columns at once using fused multiply-add.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
+#[cfg(any(
+    not(feature = "no_std"),
+    all(target_feature = "avx", target_feature = "fma")
+))]
 #[target_feature(enable = "avx,fma")]
 pub(super) unsafe fn butterfly_7_avx_fma(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
+    start_col: usize,
     num_columns: usize,
 ) {
+    use core::arch::x86_64::*;
+
     unsafe {
-        let simd_cols = (num_columns / 4) * 4;
+        let simd_cols = ((num_columns - start_col) / 4) * 4;
 
         // Broadcast W7 constants for SIMD operations.
         let w7_1_re = _mm256_set1_ps(super::W7_1_RE);
@@ -240,7 +248,7 @@ pub(super) unsafe fn butterfly_7_avx_fma(
         let w7_6_re = _mm256_set1_ps(super::W7_6_RE);
         let w7_6_im = _mm256_set1_ps(super::W7_6_IM);
 
-        for idx in (0..simd_cols).step_by(4) {
+        for idx in (start_col..start_col + simd_cols).step_by(4) {
             // Load 4 complex numbers from each row.
             let x0_ptr = data.as_ptr().add(idx) as *const f32;
             let x0 = _mm256_loadu_ps(x0_ptr);
@@ -419,6 +427,6 @@ pub(super) unsafe fn butterfly_7_avx_fma(
             _mm256_storeu_ps(y6_ptr, y6);
         }
 
-        super::butterfly_7_columns(data, stage_twiddles, num_columns, simd_cols, num_columns);
+        super::butterfly_7_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
     }
 }
