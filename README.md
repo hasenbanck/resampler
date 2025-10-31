@@ -1,5 +1,9 @@
 # resampler
 
+[![CI](https://github.com/hasenbanck/resampler/actions/workflows/rust.yml/badge.svg)](https://github.com/hasenbanck/resampler/actions/workflows/rust.yml)
+[![Crate](https://img.shields.io/crates/v/resampler.svg)](https://crates.io/crates/resampler)
+[![API](https://docs.rs/resampler/badge.svg)](https://docs.rs/resampler)
+
 Resampler is a small, zero-dependency crate for high-quality audio resampling between common sample rates.
 It provides both FFT-based and FIR-based resamplers optimized for different use cases.
 
