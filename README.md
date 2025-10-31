@@ -74,11 +74,8 @@ Key technical details:
 
 - Custom mixed-radix FFT with the standard Cooley-Tukey algorithm.
 - SIMD optimizations: All butterflies have SSE, SSE3, AVX, and ARM NEON implementations.
-- Real-valued FFT: Exploits conjugate symmetry for 2x performance.
-- Kaiser window: Beta parameter of 10.0 provides excellent stopband attenuation of -100 dB while maintaining good
-  time-domain localization.
-- Optimal configurations: Pre-computed FFT sizes and factorizations for all supported sample rate pairs, with throughput
-  scaling to ensure a latency around 256 samples.
+- Stopband attenuation of -100 dB using the Kaiser windows function.
+- Latency around 256 samples.
 
 ## FIR-Based Implementation
 
@@ -88,7 +85,7 @@ Key technical details:
 - Polyphase decomposition: 1024 phases with linear interpolation between phases
 - SIMD optimizations: Convolution kernels optimized with SSE, SSE3, AVX, AVX-512, and ARM NEON
 - Configurable filter length: 32, 64, or 128 taps (16, 32, or 64 samples latency)
-- Kaiser windowing: Beta parameter of 10.0 provides -90 dB stopband attenuation
+- Adjustable rolloff and stopband attenuation
 - Streaming API: Accepts arbitrary input buffer sizes for flexible real-time processing
 
 ## Performance
