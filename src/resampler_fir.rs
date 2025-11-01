@@ -1,7 +1,10 @@
+#[cfg(feature = "no_std")]
+use alloc::alloc::{Layout, alloc, dealloc};
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
-use core::array;
+use core::{array, ops::Deref, ptr, slice};
 #[cfg(not(feature = "no_std"))]
 use std::{
+    alloc::{Layout, alloc, dealloc},
     collections::HashMap,
     sync::{LazyLock, Mutex},
 };
@@ -15,8 +18,59 @@ const PHASES: usize = 1024;
 const INPUT_CAPACITY: usize = 4096;
 const BUFFER_SIZE: usize = INPUT_CAPACITY * 2;
 
+/// A 64-byte aligned memory of f32 values.
+struct AlignedMemory {
+    ptr: *mut f32,
+    len: usize,
+    layout: Layout,
+}
+
+impl AlignedMemory {
+    fn new(data: Vec<f32>) -> Self {
+        const ALIGNMENT: usize = 64;
+
+        let len = data.len();
+        let size = len * size_of::<f32>();
+
+        unsafe {
+            let layout = Layout::from_size_align(size, ALIGNMENT).expect("invalid layout");
+            let ptr = alloc(layout) as *mut f32;
+
+            if ptr.is_null() {
+                panic!("failed to allocate aligned memory for FIR coefficients");
+            }
+
+            ptr::copy_nonoverlapping(data.as_ptr(), ptr, len);
+
+            Self { ptr, len, layout }
+        }
+    }
+}
+
+impl Deref for AlignedMemory {
+    type Target = [f32];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl Drop for AlignedMemory {
+    fn drop(&mut self) {
+        unsafe {
+            dealloc(self.ptr as *mut u8, self.layout);
+        }
+    }
+}
+
+// Safety: AlignedSlice can be safely sent between threads.
+unsafe impl Send for AlignedMemory {}
+
+// Safety: AlignedSlice can be safely shared between threads (immutable access).
+unsafe impl Sync for AlignedMemory {}
+
 struct FirCacheData {
-    coeffs: Arc<[f32]>,
+    coeffs: Arc<AlignedMemory>,
     taps: usize,
 }
 
@@ -121,7 +175,7 @@ static FIR_CACHE: LazyLock<Mutex<HashMap<FirCacheKey, FirCacheData>>> =
 pub struct ResamplerFir<const CHANNEL: usize> {
     /// Polyphase coefficient table stored contiguously: all phases × taps in a single allocation.
     /// Layout: [phase0_tap0..N, phase1_tap0..N, ..., phase1023_tap0..N]
-    coeffs: Arc<[f32]>,
+    coeffs: Arc<AlignedMemory>,
     /// Per-channel double-sized input buffers for efficient buffer management.
     /// Size = BUFFER_SIZE (2x INPUT_CAPACITY) to minimize copy operations.
     input_buffers: [Box<[f32]>; CHANNEL],
@@ -264,13 +318,17 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         }
 
         FirCacheData {
-            coeffs: Arc::from(flattened.into_boxed_slice()),
+            coeffs: Arc::new(AlignedMemory::new(flattened)),
             taps,
         }
     }
 
     #[cfg(not(feature = "no_std"))]
-    fn get_or_create_fir_coeffs(cutoff: f32, taps: usize, attenuation: Attenuation) -> Arc<[f32]> {
+    fn get_or_create_fir_coeffs(
+        cutoff: f32,
+        taps: usize,
+        attenuation: Attenuation,
+    ) -> Arc<AlignedMemory> {
         let cache_key = FirCacheKey {
             cutoff_bits: cutoff.to_bits(),
             taps,
@@ -287,7 +345,11 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
     }
 
     #[cfg(feature = "no_std")]
-    fn get_or_create_fir_coeffs(cutoff: f32, taps: usize, attenuation: Attenuation) -> Arc<[f32]> {
+    fn get_or_create_fir_coeffs(
+        cutoff: f32,
+        taps: usize,
+        attenuation: Attenuation,
+    ) -> Arc<AlignedMemory> {
         let beta = attenuation.to_kaiser_beta();
         Self::create_fir_coeffs(cutoff, taps, beta).coeffs
     }

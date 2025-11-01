@@ -22,7 +22,7 @@ pub(super) unsafe fn convolve_neon(input: &[f32], coeffs: &[f32], taps: usize) -
         for i in 0..simd_iterations {
             let offset = i * SIMD_WIDTH;
 
-            // Load 4 input samples and 4 coefficients (unaligned load).
+            // Load 4 input samples (may be unaligned) and 4 coefficients (aligned).
             let input_vec = vld1q_f32(input.as_ptr().add(offset));
             let coeffs_vec = vld1q_f32(coeffs.as_ptr().add(offset));
 
