@@ -19,6 +19,12 @@ pub(crate) unsafe fn convolve_avx(input: &[f32], coeffs: &[f32], taps: usize) ->
         const SIMD_WIDTH: usize = 8;
         let simd_iterations = taps / SIMD_WIDTH;
 
+        debug_assert_eq!(
+            coeffs.as_ptr() as usize % 32,
+            0,
+            "Coefficient data must be 32-byte aligned for AVX aligned loads"
+        );
+
         // Initialize accumulator to zero.
         let mut acc = _mm256_setzero_ps();
 
@@ -26,9 +32,9 @@ pub(crate) unsafe fn convolve_avx(input: &[f32], coeffs: &[f32], taps: usize) ->
         for i in 0..simd_iterations {
             let offset = i * SIMD_WIDTH;
 
-            // Load 8 input samples and 8 coefficients (unaligned load).
+            // Load 8 input samples (unaligned) and 8 coefficients (aligned).
             let input_vec = _mm256_loadu_ps(input.as_ptr().add(offset));
-            let coeffs_vec = _mm256_loadu_ps(coeffs.as_ptr().add(offset));
+            let coeffs_vec = _mm256_load_ps(coeffs.as_ptr().add(offset));
 
             // Separate multiply and add: acc = acc + (coeffs_vec * input_vec).
             let prod = _mm256_mul_ps(coeffs_vec, input_vec);
@@ -71,6 +77,12 @@ pub(crate) unsafe fn convolve_avx_fma(input: &[f32], coeffs: &[f32], taps: usize
         const SIMD_WIDTH: usize = 8;
         let simd_iterations = taps / SIMD_WIDTH;
 
+        debug_assert_eq!(
+            coeffs.as_ptr() as usize % 32,
+            0,
+            "Coefficient data must be 32-byte aligned for AVX aligned loads"
+        );
+
         // Initialize accumulator to zero.
         let mut acc = _mm256_setzero_ps();
 
@@ -78,9 +90,9 @@ pub(crate) unsafe fn convolve_avx_fma(input: &[f32], coeffs: &[f32], taps: usize
         for i in 0..simd_iterations {
             let offset = i * SIMD_WIDTH;
 
-            // Load 8 input samples and 8 coefficients (unaligned load).
+            // Load 8 input samples (unaligned) and 8 coefficients (aligned).
             let input_vec = _mm256_loadu_ps(input.as_ptr().add(offset));
-            let coeffs_vec = _mm256_loadu_ps(coeffs.as_ptr().add(offset));
+            let coeffs_vec = _mm256_load_ps(coeffs.as_ptr().add(offset));
 
             // Fused multiply-add: acc = acc + (coeffs_vec * input_vec).
             acc = _mm256_fmadd_ps(coeffs_vec, input_vec, acc);

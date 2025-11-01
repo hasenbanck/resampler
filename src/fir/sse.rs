@@ -18,6 +18,12 @@ pub(crate) unsafe fn convolve_sse(input: &[f32], coeffs: &[f32], taps: usize) ->
         const SIMD_WIDTH: usize = 4;
         let simd_iterations = taps / SIMD_WIDTH;
 
+        debug_assert_eq!(
+            coeffs.as_ptr() as usize % 16,
+            0,
+            "Coefficient data must be 16-byte aligned for SSE aligned loads"
+        );
+
         // Initialize accumulator to zero.
         let mut acc = _mm_setzero_ps();
 
@@ -25,9 +31,9 @@ pub(crate) unsafe fn convolve_sse(input: &[f32], coeffs: &[f32], taps: usize) ->
         for i in 0..simd_iterations {
             let offset = i * SIMD_WIDTH;
 
-            // Load 4 input samples and 4 coefficients (unaligned load).
+            // Load 4 input samples (unaligned) and 4 coefficients (aligned).
             let input_vec = _mm_loadu_ps(input.as_ptr().add(offset));
-            let coeffs_vec = _mm_loadu_ps(coeffs.as_ptr().add(offset));
+            let coeffs_vec = _mm_load_ps(coeffs.as_ptr().add(offset));
 
             // Multiply and add: acc = acc + (coeffs_vec * input_vec).
             let prod = _mm_mul_ps(coeffs_vec, input_vec);
@@ -64,6 +70,12 @@ pub(crate) unsafe fn convolve_sse3(input: &[f32], coeffs: &[f32], taps: usize) -
         const SIMD_WIDTH: usize = 4;
         let simd_iterations = taps / SIMD_WIDTH;
 
+        debug_assert_eq!(
+            coeffs.as_ptr() as usize % 16,
+            0,
+            "Coefficient data must be 16-byte aligned for SSE aligned loads"
+        );
+
         // Initialize accumulator to zero.
         let mut acc = _mm_setzero_ps();
 
@@ -71,9 +83,9 @@ pub(crate) unsafe fn convolve_sse3(input: &[f32], coeffs: &[f32], taps: usize) -
         for i in 0..simd_iterations {
             let offset = i * SIMD_WIDTH;
 
-            // Load 4 input samples and 4 coefficients (unaligned load).
+            // Load 4 input samples (unaligned) and 4 coefficients (aligned).
             let input_vec = _mm_loadu_ps(input.as_ptr().add(offset));
-            let coeffs_vec = _mm_loadu_ps(coeffs.as_ptr().add(offset));
+            let coeffs_vec = _mm_load_ps(coeffs.as_ptr().add(offset));
 
             // Multiply and add: acc = acc + (coeffs_vec * input_vec).
             let prod = _mm_mul_ps(coeffs_vec, input_vec);
