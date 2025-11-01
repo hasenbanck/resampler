@@ -1,25 +1,29 @@
 use crate::{Complex32, Radix};
 
-/// Reverses the bits of an integer value.
-#[inline]
-fn reverse_bits(mut x: usize, bits: usize) -> usize {
-    let mut result = 0;
-    for _ in 0..bits {
-        result = (result << 1) | (x & 1);
-        x >>= 1;
-    }
-    result
-}
-
-/// Performs bit-reversal permutation on the input data.
+/// Performs bit-reversal permutation on the input data using the inductive XOR method.
+///
+/// Based on "Practically efficient methods for performing bit-reversed permutation in C++11 on
+/// the x86-64 architecture" by Knauth et al. (2017)
 fn bit_reverse_radix2(data: &mut [Complex32], log2n: usize) {
     let n = data.len();
 
-    for i in 0..n {
-        let j = reverse_bits(i, log2n);
-        if i < j {
-            data.swap(i, j);
+    let mut reversed = 0usize;
+
+    for index in 0..(n - 1) {
+        // Only swap if index < reversed to avoid double-swapping.
+        if index < reversed {
+            data.swap(index, reversed);
         }
+
+        // Compute the next reversed index using the inductive XOR method.
+        let diff = index ^ (index + 1);
+
+        // Count leading zeros and shift to reverse the diff pattern.
+        let leading_zeros = diff.leading_zeros() as usize;
+        let reversed_diff = diff << (leading_zeros - (usize::BITS as usize - log2n));
+
+        // Update reversed index by flipping the bits that changed.
+        reversed ^= reversed_diff;
     }
 }
 

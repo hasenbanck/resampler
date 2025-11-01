@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Improved performance for `ResamplerFir` by using better memory layout and improved AVX-512 code.
-
+- Improved performance for `ResamplerFft` when using pure factor 2 configurations.
 
 ## [0.3.1] - 2025-10-31
 
