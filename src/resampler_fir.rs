@@ -12,16 +12,19 @@ use crate::{
 };
 
 const PHASES: usize = 1024;
-const INPUT_CAPACITY: usize = 1024;
+const INPUT_CAPACITY: usize = 4096;
+const BUFFER_SIZE: usize = INPUT_CAPACITY * 2;
 
 struct FirCacheData {
-    coeffs: Arc<[Vec<f32>]>,
+    coeffs: Arc<[f32]>,
+    taps: usize,
 }
 
 impl Clone for FirCacheData {
     fn clone(&self) -> Self {
         Self {
             coeffs: Arc::clone(&self.coeffs),
+            taps: self.taps,
         }
     }
 }
@@ -116,13 +119,17 @@ static FIR_CACHE: LazyLock<Mutex<HashMap<FirCacheKey, FirCacheData>>> =
 ///
 /// The stopband attenuation can also be configured via the [`Attenuation`] enum.
 pub struct ResamplerFir<const CHANNEL: usize> {
-    /// Polyphase coefficient table: 1024 phases × N taps (where N is determined by latency setting).
-    coeffs: Arc<[Vec<f32>]>,
-    /// Per-channel fixed-size input buffers (capacity = INPUT_CAPACITY frames).
+    /// Polyphase coefficient table stored contiguously: all phases × taps in a single allocation.
+    /// Layout: [phase0_tap0..N, phase1_tap0..N, ..., phase1023_tap0..N]
+    coeffs: Arc<[f32]>,
+    /// Per-channel double-sized input buffers for efficient buffer management.
+    /// Size = BUFFER_SIZE (2x INPUT_CAPACITY) to minimize copy operations.
     input_buffers: [Box<[f32]>; CHANNEL],
-    /// Number of valid frames currently in the input buffers.
-    buffer_fill: usize,
-    /// Current fractional position in input stream.
+    /// Read position in the input buffer (where we start reading from).
+    read_position: usize,
+    /// Number of valid frames available for processing (from read_position).
+    available_frames: usize,
+    /// Current fractional position within available frames.
     position: f64,
     /// Resampling ratio (input_rate / output_rate).
     ratio: f64,
@@ -192,8 +199,9 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
 
         let coeffs = Self::get_or_create_fir_coeffs(cutoff as f32, taps, attenuation);
 
+        // Allocate double-sized buffers for efficient buffer management.
         let input_buffers: [Box<[f32]>; CHANNEL] =
-            array::from_fn(|_| vec![0.0; INPUT_CAPACITY].into_boxed_slice());
+            array::from_fn(|_| vec![0.0; BUFFER_SIZE].into_boxed_slice());
 
         #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
         let convolve_function = if std::arch::is_x86_feature_detected!("avx512f") {
@@ -230,7 +238,8 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         ResamplerFir {
             coeffs,
             input_buffers,
-            buffer_fill: 0,
+            read_position: 0,
+            available_frames: 0,
             position: 0.0,
             ratio,
             taps,
@@ -243,18 +252,25 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
     }
 
     fn create_fir_coeffs(cutoff: f32, taps: usize, beta: f64) -> FirCacheData {
-        let coeffs = make_sincs_for_kaiser(taps, PHASES, cutoff, beta, WindowType::Symmetric);
+        let polyphase_coeffs =
+            make_sincs_for_kaiser(taps, PHASES, cutoff, beta, WindowType::Symmetric);
+
+        // Flatten the polyphase coefficients into a single contiguous allocation.
+        // Layout: [phase0_tap0..N, phase1_tap0..N, ..., phase1023_tap0..N]
+        let total_size = PHASES * taps;
+        let mut flattened = Vec::with_capacity(total_size);
+        for phase_coeffs in polyphase_coeffs {
+            flattened.extend_from_slice(&phase_coeffs);
+        }
+
         FirCacheData {
-            coeffs: Arc::from(coeffs.into_boxed_slice()),
+            coeffs: Arc::from(flattened.into_boxed_slice()),
+            taps,
         }
     }
 
     #[cfg(not(feature = "no_std"))]
-    fn get_or_create_fir_coeffs(
-        cutoff: f32,
-        taps: usize,
-        attenuation: Attenuation,
-    ) -> Arc<[Vec<f32>]> {
+    fn get_or_create_fir_coeffs(cutoff: f32, taps: usize, attenuation: Attenuation) -> Arc<[f32]> {
         let cache_key = FirCacheKey {
             cutoff_bits: cutoff.to_bits(),
             taps,
@@ -271,11 +287,7 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
     }
 
     #[cfg(feature = "no_std")]
-    fn get_or_create_fir_coeffs(
-        cutoff: f32,
-        taps: usize,
-        attenuation: Attenuation,
-    ) -> Arc<[Vec<f32>]> {
+    fn get_or_create_fir_coeffs(cutoff: f32, taps: usize, attenuation: Attenuation) -> Arc<[f32]> {
         let beta = attenuation.to_kaiser_beta();
         Self::create_fir_coeffs(cutoff, taps, beta).coeffs
     }
@@ -348,29 +360,31 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         let input_frames = input.len() / CHANNEL;
         let output_capacity = output.len() / CHANNEL;
 
-        let remaining_capacity = INPUT_CAPACITY - self.buffer_fill;
-        let frames_to_copy = input_frames.min(remaining_capacity);
+        let write_position = self.read_position + self.available_frames;
+        let remaining_capacity = BUFFER_SIZE.saturating_sub(write_position);
+        let frames_to_copy = input_frames
+            .min(remaining_capacity)
+            .min(INPUT_CAPACITY - self.available_frames);
 
-        // Deinterleave and copy input frames into fixed-size buffers.
+        // Deinterleave and copy input frames into double-sized buffers.
         for frame_idx in 0..frames_to_copy {
             for channel in 0..CHANNEL {
-                self.input_buffers[channel][self.buffer_fill + frame_idx] =
+                self.input_buffers[channel][write_position + frame_idx] =
                     input[frame_idx * CHANNEL + channel];
             }
         }
-        self.buffer_fill += frames_to_copy;
+        self.available_frames += frames_to_copy;
 
-        // Generate output samples.
         let mut output_frame_count = 0;
 
         loop {
             #[cfg(not(feature = "no_std"))]
-            let input_pos = self.position.floor() as usize;
+            let input_offset = self.position.floor() as usize;
             #[cfg(feature = "no_std")]
-            let input_pos = libm::floor(self.position) as usize;
+            let input_offset = libm::floor(self.position) as usize;
 
             // Check if we have enough input samples (need `taps` samples for convolution).
-            if input_pos + self.taps > self.buffer_fill {
+            if input_offset + self.taps > self.available_frames {
                 break;
             }
 
@@ -378,7 +392,6 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
                 break;
             }
 
-            // Calculate phase index and fractional part for interpolation.
             #[cfg(not(feature = "no_std"))]
             let position_fract = self.position.fract();
             #[cfg(feature = "no_std")]
@@ -389,35 +402,48 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
             let phase2 = (phase1 + 1).min(self.phases - 1);
             let frac = (phase_f - phase1 as f64) as f32;
 
-            // Process all channels and interleave directly into output.
             for channel in 0..CHANNEL {
                 // Perform N-tap convolution with linear interpolation between phases.
-                let input_slice = &self.input_buffers[channel][input_pos..input_pos + self.taps];
-                let sample1 =
-                    (self.convolve_function)(input_slice, &self.coeffs[phase1], self.taps);
-                let sample2 =
-                    (self.convolve_function)(input_slice, &self.coeffs[phase2], self.taps);
+                let actual_pos = self.read_position + input_offset;
+                let input_slice = &self.input_buffers[channel][actual_pos..actual_pos + self.taps];
+
+                let phase1_start = phase1 * self.taps;
+                let coeffs_phase1 = &self.coeffs[phase1_start..phase1_start + self.taps];
+                let phase2_start = phase2 * self.taps;
+                let coeffs_phase2 = &self.coeffs[phase2_start..phase2_start + self.taps];
+
+                let sample1 = (self.convolve_function)(input_slice, coeffs_phase1, self.taps);
+                let sample2 = (self.convolve_function)(input_slice, coeffs_phase2, self.taps);
+
                 let sample = sample1 * (1.0 - frac) + sample2 * frac;
                 output[output_frame_count * CHANNEL + channel] = sample;
             }
 
             output_frame_count += 1;
-
             self.position += self.ratio;
         }
 
+        // Update buffer state: consume processed frames.
         #[cfg(not(feature = "no_std"))]
         let consumed_frames = self.position.floor() as usize;
         #[cfg(feature = "no_std")]
         let consumed_frames = libm::floor(self.position) as usize;
 
-        let remaining_frames = self.buffer_fill - consumed_frames;
-        for channel in 0..CHANNEL {
-            self.input_buffers[channel].copy_within(consumed_frames..self.buffer_fill, 0);
-        }
-        self.buffer_fill = remaining_frames;
-
+        self.read_position += consumed_frames;
+        self.available_frames -= consumed_frames;
         self.position -= consumed_frames as f64;
+
+        // Double-buffer optimization: only copy when read_position exceeds threshold.
+        if self.read_position > INPUT_CAPACITY {
+            // Copy remaining valid data to the beginning of the buffer.
+            for channel in 0..CHANNEL {
+                self.input_buffers[channel].copy_within(
+                    self.read_position..self.read_position + self.available_frames,
+                    0,
+                );
+            }
+            self.read_position = 0;
+        }
 
         Ok((frames_to_copy * CHANNEL, output_frame_count * CHANNEL))
     }
@@ -438,7 +464,8 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
     /// Call this when starting to process a new audio stream to avoid
     /// discontinuities from previous audio data.
     pub fn reset(&mut self) {
-        self.buffer_fill = 0;
+        self.read_position = 0;
+        self.available_frames = 0;
         self.position = 0.0;
     }
 }

@@ -42,15 +42,16 @@ fn bench_resampler_fir(c: &mut Criterion) {
 
     for bench_config in &configs {
         const CHANNELS: usize = 2;
-        const CHUNK_SIZE: usize = 256;
+        const CHUNK_SIZE: usize = 1024;
 
-        // Calculate expected output size for throughput measurement
+        // Calculate expected output size based on resampling ratio
         let input_rate_hz = u32::from(bench_config.input_rate) as f64;
         let output_rate_hz = u32::from(bench_config.output_rate) as f64;
         let ratio = output_rate_hz / input_rate_hz;
-        let expected_output = (CHUNK_SIZE as f64 * ratio) as usize;
+        let expected_output_samples = (CHUNK_SIZE as f64 * ratio).round() as usize;
 
-        let bytes_per_iteration = expected_output * size_of::<f32>();
+        // Measure throughput based on output bytes produced
+        let bytes_per_iteration = expected_output_samples * size_of::<f32>();
         group.throughput(Throughput::Bytes(bytes_per_iteration as u64));
 
         group.bench_with_input(
@@ -65,7 +66,8 @@ fn bench_resampler_fir(c: &mut Criterion) {
                 );
 
                 let input = generate_white_noise(CHUNK_SIZE);
-                let mut output = vec![0.0f32; 512];
+                let output_size = resampler.buffer_size_output();
+                let mut output = vec![0.0f32; output_size];
 
                 b.iter(|| {
                     let (_, produced) = resampler
