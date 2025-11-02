@@ -558,7 +558,7 @@ mod tests {
         let mut scratchpad = vec![crate::fft::Complex32::zero(); fft_size];
 
         // Compute FFT.
-        fft.process(&mut input_buffer, &mut output_buffer, &mut scratchpad);
+        fft.process(&input_buffer, &mut output_buffer, &mut scratchpad);
 
         // Compute magnitudes in dB.
         output_buffer

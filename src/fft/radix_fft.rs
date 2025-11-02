@@ -43,6 +43,8 @@ pub struct Inverse;
 
 type CooleyTukeyRadix2Fn = fn(&mut [Complex32], &[Complex32], &[Radix]);
 type CooleyTukeyRadixNFn = fn(&mut [Complex32], &[Complex32], &[Radix], &[usize], &mut [Complex32]);
+type PostprocessFn = fn(&mut [Complex32], &mut [Complex32], &[Complex32]);
+type PreprocessFn = fn(&mut [Complex32], &mut [Complex32], &[Complex32]);
 
 /// Mixed-radix FFT for real values.
 ///
@@ -69,6 +71,8 @@ pub struct RadixFFT<D> {
     is_pure_radix2: bool,
     cooley_tukey_radix_2: CooleyTukeyRadix2Fn,
     cooley_tukey_radix_n: CooleyTukeyRadixNFn,
+    postprocess_fft: PostprocessFn,
+    preprocess_ifft: PreprocessFn,
     _direction: PhantomData<D>,
 }
 
@@ -149,6 +153,32 @@ impl<D> RadixFFT<D> {
             )
         };
 
+        #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+        let (postprocess_fft, preprocess_ifft): (PostprocessFn, PreprocessFn) =
+            if std::arch::is_x86_feature_detected!("avx")
+                && std::arch::is_x86_feature_detected!("fma")
+            {
+                (
+                    super::real_complex::postprocess_fft_avx_fma_wrapper,
+                    super::real_complex::preprocess_ifft_avx_wrapper,
+                )
+            } else if std::arch::is_x86_feature_detected!("avx") {
+                (
+                    super::real_complex::postprocess_fft_avx_wrapper,
+                    super::real_complex::preprocess_ifft_avx_wrapper,
+                )
+            } else if std::arch::is_x86_feature_detected!("sse2") {
+                (
+                    super::real_complex::postprocess_fft_sse2_wrapper,
+                    super::real_complex::preprocess_ifft_sse2_wrapper,
+                )
+            } else {
+                (
+                    super::real_complex::postprocess_fft_scalar,
+                    super::real_complex::preprocess_ifft_scalar,
+                )
+            };
+
         Self {
             n,
             n2,
@@ -166,6 +196,15 @@ impl<D> RadixFFT<D> {
             cooley_tukey_radix_n,
             #[cfg(any(not(target_arch = "x86_64"), feature = "no_std"))]
             cooley_tukey_radix_n: super::cooley_tukey_radixn::cooley_tukey_radix_n,
+            #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+            postprocess_fft,
+            #[cfg(any(not(target_arch = "x86_64"), feature = "no_std"))]
+            postprocess_fft: super::real_complex::select_postprocess_fn(),
+            #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+            preprocess_ifft,
+            #[cfg(any(not(target_arch = "x86_64"), feature = "no_std"))]
+            preprocess_ifft: super::real_complex::select_preprocess_fn(),
+
             _direction: PhantomData,
         }
     }
@@ -432,39 +471,11 @@ impl<D> RadixFFT<D> {
         let right_len = output_right.len();
         let output_right_middle = &mut output_right[..right_len - 1];
 
-        let iter_count = output_left_middle
-            .len()
-            .min(output_right_middle.len())
-            .min(self.real_complex_expansion_twiddles.len());
-
-        let right_len = output_right_middle.len();
-        for (i, out_left) in output_left_middle.iter_mut().enumerate().take(iter_count) {
-            let twiddle = self.real_complex_expansion_twiddles[i];
-            let out = *out_left;
-            let out_rev_idx = right_len - 1 - i;
-            let out_rev = output_right_middle[out_rev_idx];
-
-            let sum = out.add(&out_rev);
-            let diff = out.sub(&out_rev);
-
-            // Apply factored twiddle multiplication.
-            let twiddled_re_sum = Complex32::new(sum.re * twiddle.re, sum.im * twiddle.re);
-            let twiddled_im_sum = Complex32::new(sum.re * twiddle.im, sum.im * twiddle.im);
-            let twiddled_re_diff = Complex32::new(diff.re * twiddle.re, diff.im * twiddle.re);
-            let twiddled_im_diff = Complex32::new(diff.re * twiddle.im, diff.im * twiddle.im);
-
-            let half = 0.5;
-            let half_sum_real = half * sum.re;
-            let half_diff_imaginary = half * diff.im;
-
-            // Combine components (exploiting conjugate symmetry).
-            let real = twiddled_re_sum.im + twiddled_im_diff.re;
-            let imaginary = twiddled_im_sum.im - twiddled_re_diff.re;
-
-            *out_left = Complex32::new(half_sum_real + real, half_diff_imaginary + imaginary);
-            output_right_middle[out_rev_idx] =
-                Complex32::new(half_sum_real - real, imaginary - half_diff_imaginary);
-        }
+        (self.postprocess_fft)(
+            output_left_middle,
+            output_right_middle,
+            &self.real_complex_expansion_twiddles,
+        );
 
         // Handle odd-length case: conjugate center element.
         if output.len() % 2 == 1 {
@@ -582,34 +593,11 @@ impl<D> RadixFFT<D> {
         let right_len = input_right.len();
         let input_right_middle = &mut input_right[..right_len - 1];
 
-        let iter_count = input_left_middle
-            .len()
-            .min(input_right_middle.len())
-            .min(self.complex_real_reduction_twiddles.len());
-
-        for (i, &twiddle) in self.complex_real_reduction_twiddles[..iter_count]
-            .iter()
-            .enumerate()
-        {
-            let inp = input_left_middle[i];
-            let inp_rev_idx = input_right_middle.len() - 1 - i;
-            let inp_rev = input_right_middle[inp_rev_idx];
-
-            let sum = inp.add(&inp_rev);
-            let diff = inp.sub(&inp_rev);
-
-            // Apply factored twiddle multiplication with conjugate twiddles.
-            let twiddled_re_sum = Complex32::new(sum.re * twiddle.re, sum.im * twiddle.re);
-            let twiddled_im_sum = Complex32::new(sum.re * twiddle.im, sum.im * twiddle.im);
-            let twiddled_re_diff = Complex32::new(diff.re * twiddle.re, diff.im * twiddle.re);
-            let twiddled_im_diff = Complex32::new(diff.re * twiddle.im, diff.im * twiddle.im);
-
-            let real = twiddled_re_sum.im + twiddled_im_diff.re;
-            let imaginary = twiddled_im_sum.im - twiddled_re_diff.re;
-
-            input_left_middle[i] = Complex32::new(sum.re - real, diff.im - imaginary);
-            input_right_middle[inp_rev_idx] = Complex32::new(sum.re + real, -imaginary - diff.im);
-        }
+        (self.preprocess_ifft)(
+            input_left_middle,
+            input_right_middle,
+            &self.complex_real_reduction_twiddles,
+        );
 
         // Handle odd-length case: double and conjugate center element.
         if buffer.len() % 2 == 1 {
@@ -1523,7 +1511,7 @@ mod tests {
 
             // For even sizes, Nyquist bin (at size/2) is also real and counted once.
             // For odd sizes, there is no Nyquist bin.
-            if size % 2 == 0 {
+            if size.is_multiple_of(2) {
                 freq_energy += output[size / 2].re * output[size / 2].re;
                 // Intermediate bins are counted twice (positive and negative frequencies).
                 for i in 1..(size / 2) {
@@ -1592,7 +1580,7 @@ mod tests {
 
         // Verify that casting is safe.
         let reals = [1.0f32, 2.0, 3.0, 4.0];
-        let complex = unsafe { core::slice::from_raw_parts(reals.as_ptr() as *const Complex32, 2) };
+        let complex = unsafe { slice::from_raw_parts(reals.as_ptr() as *const Complex32, 2) };
 
         assert_eq!(complex[0].re, 1.0);
         assert_eq!(complex[0].im, 2.0);
