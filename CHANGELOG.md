@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.2] - 2025-11-02
 
+For this patch we focused on improving the performance of both the FFT and FIR version:
+
+- The `ResamplerFft` benchmarks are on my AMD Ryzen 9 9950X3D 3% to 50% faster (~550 to ~990 MiB/s).
+- The `ResamplerFir` benchmarks are on my AMD Ryzen 9 9950X3D 3% to 15% faster (~380 to ~420 MiB/s).
+
 ### Changed
 
 - Improved performance for `ResamplerFir` by using better memory layout and improved AVX-512 code.
