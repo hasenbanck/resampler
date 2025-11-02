@@ -107,7 +107,7 @@ define_cooley_tukey_radix2!(
     cfg = all(target_arch = "x86_64", not(feature = "no_std"))
 );
 define_cooley_tukey_radix2!(
-    cooley_tukey_radix_2_sse,
-    butterfly_2_dispatch_sse,
+    cooley_tukey_radix_2_sse2,
+    butterfly_2_dispatch_sse2,
     cfg = all(target_arch = "x86_64", not(feature = "no_std"))
 );
