@@ -167,12 +167,12 @@ pub(crate) fn butterfly_5_dispatch(
 
     #[cfg(all(
         target_arch = "x86_64",
-        target_feature = "sse",
+        target_feature = "sse2",
         not(target_feature = "sse3")
     ))]
     {
         if num_columns >= 2 {
-            return unsafe { sse::butterfly_5_sse(data, stage_twiddles, 0, num_columns) };
+            return unsafe { sse::butterfly_5_sse2(data, stage_twiddles, 0, num_columns) };
         }
     }
 
@@ -238,13 +238,13 @@ pub(crate) fn butterfly_5_dispatch_sse3(
 
 #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
 #[inline(always)]
-pub(crate) fn butterfly_5_dispatch_sse(
+pub(crate) fn butterfly_5_dispatch_sse2(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
     num_columns: usize,
 ) {
     if num_columns >= 2 {
-        return unsafe { sse::butterfly_5_sse(data, stage_twiddles, 0, num_columns) };
+        return unsafe { sse::butterfly_5_sse2(data, stage_twiddles, 0, num_columns) };
     }
 
     butterfly_5_scalar(data, stage_twiddles, 0, num_columns);
@@ -271,17 +271,17 @@ mod tests {
     #[test]
     #[cfg(all(
         target_arch = "x86_64",
-        any(not(feature = "no_std"), target_feature = "sse")
+        any(not(feature = "no_std"), target_feature = "sse2")
     ))]
-    fn test_butterfly_5_sse_vs_scalar() {
+    fn test_butterfly_5_sse2_vs_scalar() {
         test_butterfly_against_scalar(
             |data, twiddles, num_columns| butterfly_5_scalar(data, twiddles, 0, num_columns),
             |data, twiddles, num_columns| unsafe {
-                sse::butterfly_5_sse(data, twiddles, 0, num_columns);
+                sse::butterfly_5_sse2(data, twiddles, 0, num_columns);
             },
             5,
             4,
-            "butterfly_5_sse",
+            "butterfly_5_sse2",
         );
     }
 

@@ -165,11 +165,11 @@ define_cooley_tukey_radixn!(
     cfg = all(target_arch = "x86_64", not(feature = "no_std"))
 );
 define_cooley_tukey_radixn!(
-    cooley_tukey_radix_n_sse,
-    butterfly_2_dispatch_sse,
-    butterfly_3_dispatch_sse,
-    butterfly_4_dispatch_sse,
-    butterfly_5_dispatch_sse,
-    butterfly_7_dispatch_sse,
+    cooley_tukey_radix_n_sse2,
+    butterfly_2_dispatch_sse2,
+    butterfly_3_dispatch_sse2,
+    butterfly_4_dispatch_sse2,
+    butterfly_5_dispatch_sse2,
+    butterfly_7_dispatch_sse2,
     cfg = all(target_arch = "x86_64", not(feature = "no_std"))
 );

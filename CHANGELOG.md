@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved performance for `ResamplerFft` when using pure factor 2 configurations.
 - Improved performance for `ResamplerFft` by using SIMD for the real/complex pre- and post-processing.
 
+### Fixed
+
+- Internally butterflies were marked as x86_64 SSE even thought they used SSE2 functionality. This is now fixed. Since
+  all x86_64 need to support both SSE and SSE2 this is a theoretical problem, but which should be fixed.
+
 ## [0.3.1] - 2025-10-31
 
 ### Changed

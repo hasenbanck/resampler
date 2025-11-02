@@ -1,14 +1,14 @@
-#[cfg(any(not(feature = "no_std"), target_feature = "sse"))]
+#[cfg(any(not(feature = "no_std"), target_feature = "sse2"))]
 use crate::Complex32;
 
-/// Pure SSE implementation: processes 2 columns at once.
+/// Pure SSE2 implementation: processes 2 columns at once.
 #[cfg(any(
     test,
     not(feature = "no_std"),
-    all(target_feature = "sse", not(target_feature = "sse3"))
+    all(target_feature = "sse2", not(target_feature = "sse3"))
 ))]
-#[target_feature(enable = "sse")]
-pub(super) unsafe fn butterfly_3_sse(
+#[target_feature(enable = "sse2")]
+pub(super) unsafe fn butterfly_3_sse2(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
     start_col: usize,
@@ -57,7 +57,7 @@ pub(super) unsafe fn butterfly_3_sse(
             let x1_swap = _mm_shuffle_ps(x1, x1, 0b10_11_00_01);
             let prod_im = _mm_mul_ps(w1_im, x1_swap);
 
-            // Emulate addsub for complex multiply.
+            // Emulate SSE3 addsub using SSE2 for complex multiply.
             let neg_mask = _mm_castsi128_ps(_mm_set_epi32(
                 0,
                 0x80000000u32 as i32,

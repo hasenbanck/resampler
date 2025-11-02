@@ -1,14 +1,14 @@
-#[cfg(any(not(feature = "no_std"), target_feature = "sse"))]
+#[cfg(any(not(feature = "no_std"), target_feature = "sse2"))]
 use crate::Complex32;
 
-/// Pure SSE implementation: processes 2 columns at once.
+/// Pure SSE2 implementation: processes 2 columns at once.
 #[cfg(any(
     test,
     not(feature = "no_std"),
-    all(target_feature = "sse", not(target_feature = "sse3"))
+    all(target_feature = "sse2", not(target_feature = "sse3"))
 ))]
-#[target_feature(enable = "sse")]
-pub(super) unsafe fn butterfly_7_sse(
+#[target_feature(enable = "sse2")]
+pub(super) unsafe fn butterfly_7_sse2(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
     start_col: usize,

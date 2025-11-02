@@ -141,10 +141,10 @@ impl<D> RadixFFT<D> {
                 super::cooley_tukey_radix2::cooley_tukey_radix_2_sse3,
                 super::cooley_tukey_radixn::cooley_tukey_radix_n_sse3,
             )
-        } else if std::arch::is_x86_feature_detected!("sse") {
+        } else if std::arch::is_x86_feature_detected!("sse2") {
             (
-                super::cooley_tukey_radix2::cooley_tukey_radix_2_sse,
-                super::cooley_tukey_radixn::cooley_tukey_radix_n_sse,
+                super::cooley_tukey_radix2::cooley_tukey_radix_2_sse2,
+                super::cooley_tukey_radixn::cooley_tukey_radix_n_sse2,
             )
         } else {
             (

@@ -1,14 +1,14 @@
-#[cfg(any(not(feature = "no_std"), target_feature = "sse"))]
+#[cfg(any(not(feature = "no_std"), target_feature = "sse2"))]
 use crate::Complex32;
 
-/// Pure SSE implementation: processes 2 columns at once.
+/// Pure SSE2 implementation: processes 2 columns at once.
 #[cfg(any(
     test,
     not(feature = "no_std"),
-    all(target_feature = "sse", not(target_feature = "sse3"))
+    all(target_feature = "sse2", not(target_feature = "sse3"))
 ))]
-#[target_feature(enable = "sse")]
-pub(super) unsafe fn butterfly_2_sse(
+#[target_feature(enable = "sse2")]
+pub(super) unsafe fn butterfly_2_sse2(
     data: &mut [Complex32],
     stage_twiddles: &[Complex32],
     start_col: usize,
@@ -52,7 +52,7 @@ pub(super) unsafe fn butterfly_2_sse(
             // Multiply by imaginary parts: [tw.im*d.im, tw.im*d.re, ...]
             let prod_im = _mm_mul_ps(tw_im, d_swap);
 
-            // Emulate SSE3's addsub: [a0-b0, a1+b1, a2-b2, a3+b3]
+            // Emulate SSE3's addsub using SSE2: [a0-b0, a1+b1, a2-b2, a3+b3]
             // We want: [prod_re[0]-prod_im[0], prod_re[1]+prod_im[1], prod_re[2]-prod_im[2], prod_re[3]+prod_im[3]]
             // Create a mask to negate elements at indices 0 and 2 (the real parts)
             // Mask layout: [sign_bit, 0, sign_bit, 0] to flip sign of real parts only
