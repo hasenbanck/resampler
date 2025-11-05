@@ -76,8 +76,8 @@ Use ResamplerFir when:
 The resampler uses an FFT-based overlap-add algorithm with Kaiser windowing for high-quality audio resampling.
 Key technical details:
 
-- Custom mixed-radix FFT with the standard Cooley-Tukey algorithm.
-- SIMD optimizations: All butterflies have SSE, SSE3, AVX, and ARM NEON implementations.
+- Custom mixed-radix FFT with the Stockham Autosort algorithm.
+- SIMD optimizations: All butterflies have SSE2, SSE4.2, AVX+FMA, and ARM NEON implementations.
 - Stopband attenuation of -100 dB using the Kaiser windows function.
 - Latency around 256 samples.
 
@@ -86,11 +86,11 @@ Key technical details:
 The FIR resampler uses a polyphase filter with linear interpolation for high-quality audio resampling with low latency.
 Key technical details:
 
-- Polyphase decomposition: 1024 phases with linear interpolation between phases
-- SIMD optimizations: Convolution kernels optimized with SSE, SSE3, AVX, AVX-512, and ARM NEON
-- Configurable filter length: 32, 64, or 128 taps (16, 32, or 64 samples latency)
-- Adjustable rolloff and stopband attenuation
-- Streaming API: Accepts arbitrary input buffer sizes for flexible real-time processing
+- Polyphase decomposition: 1024 phases with linear interpolation between phases.
+- SIMD optimizations: Convolution kernels optimized with SSE2, SSE4.2, AVX+FMA, AVX-512, and ARM NEON.
+- Configurable filter length: 32, 64, or 128 taps (16, 32, or 64 samples latency).
+- Adjustable rolloff and stopband attenuation.
+- Streaming API: Accepts arbitrary input buffer sizes for flexible real-time processing.
 
 ## Performance
 
@@ -98,6 +98,14 @@ Both resamplers include SIMD optimizations with runtime CPU feature detection fo
 
 But for up to 25% better performance on x86_64, compile with `target-cpu=x86-64-v3` (enables AVX2, FMA, and other
 optimizations).
+
+Overall the SIMD for x86_64 have four levels implemented, targeting four possible CPU
+generations that build up on each other:
+
+ * x86-64-v1: 128-bit SSE2 (around 2003-2004)
+ * x86-64-v2: 128-bit SSE4.2 (around 2008-2011)
+ * x86-64-v3: 256-bit AVX+FMA (around 2013-2015)
+ * x86-64-v4: 512-bit AVX-512 (around 2017-2022)
 
 ## no-std Compatibility
 

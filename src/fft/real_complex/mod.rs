@@ -1,13 +1,39 @@
 use crate::fft::Complex32;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    any(
+        all(target_feature = "avx", target_feature = "fma"),
+        not(feature = "no_std")
+    )
+))]
 mod avx;
-#[cfg(target_arch = "aarch64")]
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "sse2",
+    any(
+        test,
+        not(feature = "no_std"),
+        not(all(feature = "no_std", target_feature = "avx", target_feature = "fma"))
+    ),
+))]
+mod sse2;
+
+#[cfg(all(
+    target_arch = "aarch64",
+    any(not(feature = "no_std"), target_feature = "neon")
+))]
 mod neon;
-#[cfg(target_arch = "x86_64")]
-mod sse;
 
 /// Scalar implementation of postprocess_fft (fallback).
+#[cfg(any(
+    test,
+    all(
+        not(all(target_arch = "x86_64", target_feature = "sse2")),
+        not(target_arch = "aarch64")
+    )
+))]
 pub(crate) fn postprocess_fft_scalar(
     output_left_middle: &mut [Complex32],
     output_right_middle: &mut [Complex32],
@@ -48,6 +74,13 @@ pub(crate) fn postprocess_fft_scalar(
 }
 
 /// Scalar implementation of preprocess_ifft (fallback)
+#[cfg(any(
+    test,
+    all(
+        not(all(target_arch = "x86_64", target_feature = "sse2")),
+        not(target_arch = "aarch64")
+    )
+))]
 pub(crate) fn preprocess_ifft_scalar(
     input_left_middle: &mut [Complex32],
     input_right_middle: &mut [Complex32],
@@ -83,9 +116,8 @@ pub(crate) fn preprocess_ifft_scalar(
 #[cfg(all(
     target_arch = "x86_64",
     any(
-        test,
-        not(feature = "no_std"),
-        all(feature = "no_std", target_feature = "avx", target_feature = "fma")
+        all(target_feature = "avx", target_feature = "fma"),
+        not(feature = "no_std")
     )
 ))]
 pub(crate) fn postprocess_fft_avx_fma_wrapper(
@@ -99,37 +131,16 @@ pub(crate) fn postprocess_fft_avx_fma_wrapper(
 #[cfg(all(
     target_arch = "x86_64",
     any(
-        test,
-        all(
-            feature = "no_std",
-            target_feature = "avx",
-            not(target_feature = "fma")
-        ),
+        all(target_feature = "avx", target_feature = "fma"),
         not(feature = "no_std")
     )
 ))]
-pub(crate) fn postprocess_fft_avx_wrapper(
+pub(crate) fn preprocess_ifft_avx_fma_wrapper(
     output_left_middle: &mut [Complex32],
     output_right_middle: &mut [Complex32],
     twiddles: &[Complex32],
 ) {
-    unsafe { avx::postprocess_fft_avx(output_left_middle, output_right_middle, twiddles) }
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    any(
-        test,
-        not(feature = "no_std"),
-        all(feature = "no_std", target_feature = "avx")
-    )
-))]
-pub(crate) fn preprocess_ifft_avx_wrapper(
-    output_left_middle: &mut [Complex32],
-    output_right_middle: &mut [Complex32],
-    twiddles: &[Complex32],
-) {
-    unsafe { avx::preprocess_ifft_avx(output_left_middle, output_right_middle, twiddles) }
+    unsafe { avx::preprocess_ifft_avx_fma(output_left_middle, output_right_middle, twiddles) }
 }
 
 #[cfg(all(
@@ -145,7 +156,7 @@ pub(crate) fn postprocess_fft_sse2_wrapper(
     output_right_middle: &mut [Complex32],
     twiddles: &[Complex32],
 ) {
-    unsafe { sse::postprocess_fft_sse2(output_left_middle, output_right_middle, twiddles) }
+    unsafe { sse2::postprocess_fft_sse2(output_left_middle, output_right_middle, twiddles) }
 }
 
 #[cfg(all(
@@ -161,7 +172,7 @@ pub(crate) fn preprocess_ifft_sse2_wrapper(
     output_right_middle: &mut [Complex32],
     twiddles: &[Complex32],
 ) {
-    unsafe { sse::preprocess_ifft_sse2(output_left_middle, output_right_middle, twiddles) }
+    unsafe { sse2::preprocess_ifft_sse2(output_left_middle, output_right_middle, twiddles) }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -186,7 +197,7 @@ pub(crate) fn preprocess_ifft_neon_wrapper(
 pub(crate) fn select_postprocess_fn() -> fn(&mut [Complex32], &mut [Complex32], &[Complex32]) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
     {
-        return postprocess_fft_avx_fma_wrapper;
+        postprocess_fft_avx_fma_wrapper
     }
 
     #[cfg(all(
@@ -195,41 +206,41 @@ pub(crate) fn select_postprocess_fn() -> fn(&mut [Complex32], &mut [Complex32], 
         not(target_feature = "fma")
     ))]
     {
-        return postprocess_fft_avx_wrapper;
+        postprocess_fft_avx_wrapper
     }
 
     #[cfg(all(target_arch = "x86_64", not(target_feature = "avx")))]
     {
-        return postprocess_fft_sse2_wrapper;
+        postprocess_fft_sse2_wrapper
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        return postprocess_fft_neon_wrapper;
+        postprocess_fft_neon_wrapper
     }
 
-    #[allow(unreachable_code)]
+    #[cfg(all(not(target_arch = "x86_64"), not(target_arch = "aarch64")))]
     postprocess_fft_scalar
 }
 
 #[cfg(any(not(target_arch = "x86_64"), feature = "no_std"))]
 pub(crate) fn select_preprocess_fn() -> fn(&mut [Complex32], &mut [Complex32], &[Complex32]) {
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
     {
-        return preprocess_ifft_avx_wrapper;
+        preprocess_ifft_avx_fma_wrapper
     }
 
     #[cfg(all(target_arch = "x86_64", not(target_feature = "avx")))]
     {
-        return preprocess_ifft_sse2_wrapper;
+        preprocess_ifft_sse2_wrapper
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        return preprocess_ifft_neon_wrapper;
+        preprocess_ifft_neon_wrapper
     }
 
-    #[allow(unreachable_code)]
+    #[cfg(all(not(target_arch = "x86_64"), not(target_arch = "aarch64")))]
     preprocess_ifft_scalar
 }
 
@@ -388,24 +399,11 @@ mod tests {
         target_arch = "x86_64",
         any(not(feature = "no_std"), target_feature = "avx")
     ))]
-    fn test_postprocess_fft_avx_vs_scalar() {
-        test_postprocess_against_scalar(
-            postprocess_fft_scalar,
-            postprocess_fft_avx_wrapper,
-            "postprocess_fft AVX",
-        );
-    }
-
-    #[test]
-    #[cfg(all(
-        target_arch = "x86_64",
-        any(not(feature = "no_std"), target_feature = "avx")
-    ))]
-    fn test_preprocess_ifft_avx_vs_scalar() {
+    fn test_preprocess_ifft_avx_fma_vs_scalar() {
         test_preprocess_against_scalar(
             preprocess_ifft_scalar,
-            preprocess_ifft_avx_wrapper,
-            "preprocess_ifft AVX",
+            preprocess_ifft_avx_fma_wrapper,
+            "preprocess_ifft AVX FMA",
         );
     }
 

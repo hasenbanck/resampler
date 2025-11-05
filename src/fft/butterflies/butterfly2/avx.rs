@@ -1,110 +1,171 @@
-#[cfg(any(test, not(feature = "no_std"), target_feature = "avx"))]
-use crate::Complex32;
+use crate::fft::Complex32;
 
-/// AVX implementation: processes 4 columns at once.
-#[cfg(any(
-    test,
-    not(feature = "no_std"),
-    all(target_feature = "avx", not(target_feature = "fma"))
-))]
-#[target_feature(enable = "avx")]
-pub(super) unsafe fn butterfly_2_avx(
-    data: &mut [Complex32],
+/// Performs a single radix-2 Stockham butterfly stage for stride=1 (out-of-place, AVX+FMA).
+///
+/// This is a specialized version for the stride=1 case (first stage) that uses the unpack-permute
+/// pattern to enable sequential SIMD stores instead of scattered scalar stores.
+/// This provides significant performance benefits through write-combining and better cache utilization.
+#[target_feature(enable = "avx,fma")]
+pub(super) unsafe fn butterfly_radix2_stride1_avx_fma(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
 ) {
     use core::arch::x86_64::*;
 
+    let samples = src.len();
+    let half_samples = samples >> 1;
+    let simd_iters = (half_samples / 4) * 4;
+
     unsafe {
-        let simd_cols = ((num_columns - start_col) / 4) * 4;
+        for i in (0..simd_iters).step_by(4) {
+            // Load 4 complex numbers from first half.
+            let a_ptr = src.as_ptr().add(i) as *const f32;
+            let a = _mm256_loadu_ps(a_ptr);
 
-        for idx in (start_col..start_col + simd_cols).step_by(4) {
-            let u_ptr = data.as_ptr().add(idx) as *const f32;
-            let u = _mm256_loadu_ps(u_ptr);
+            // Load 4 complex numbers from second half.
+            let b_ptr = src.as_ptr().add(i + half_samples) as *const f32;
+            let b = _mm256_loadu_ps(b_ptr);
 
-            let d_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
-            let d = _mm256_loadu_ps(d_ptr);
-
-            let tw_ptr = stage_twiddles.as_ptr().add(idx) as *const f32;
+            // Load twiddles contiguously.
+            let tw_ptr = stage_twiddles.as_ptr().add(i) as *const f32;
             let tw = _mm256_loadu_ps(tw_ptr);
 
-            // Complex multiply using AVX.
-            // Duplicate real and imaginary parts.
-            let tw_re = _mm256_shuffle_ps(tw, tw, 0b10_10_00_00);
-            let tw_im = _mm256_shuffle_ps(tw, tw, 0b11_11_01_01);
-            let prod_re = _mm256_mul_ps(tw_re, d);
+            // Complex multiply: t = tw * b using FMA
+            let b_re = _mm256_moveldup_ps(b); // [b0.re, b0.re, b1.re, b1.re, ...]
+            let b_im = _mm256_movehdup_ps(b); // [b0.im, b0.im, b1.im, b1.im, ...]
+            let tw_swap = _mm256_permute_ps(tw, 0b10_11_00_01); // Swap re/im
+            let prod_im = _mm256_mul_ps(tw_swap, b_im);
+            let t = _mm256_fmaddsub_ps(tw, b_re, prod_im);
 
-            // Swap real/imag in d.
-            let d_swap = _mm256_shuffle_ps(d, d, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(tw_im, d_swap);
+            // Butterfly: out_top = a + t, out_bot = a - t
+            let out_top = _mm256_add_ps(a, t);
+            let out_bot = _mm256_sub_ps(a, t);
 
-            // Combine using AVX addsub for efficient complex multiply.
-            let t = _mm256_addsub_ps(prod_re, prod_im);
+            // Apply unpack-permute pattern for sequential stores.
+            let out_top_pd = _mm256_castps_pd(out_top);
+            let out_bot_pd = _mm256_castps_pd(out_bot);
 
-            // Butterfly operations.
-            let out_top = _mm256_add_ps(u, t);
-            let out_bot = _mm256_sub_ps(u, t);
+            // unpacklo_pd: [top0, bot0, top1, bot1] in lower 128-bit lanes.
+            let interleaved_lo = _mm256_castpd_ps(_mm256_unpacklo_pd(out_top_pd, out_bot_pd));
+            // unpackhi_pd: [top2, bot2, top3, bot3] in higher 128-bit lanes.
+            let interleaved_hi = _mm256_castpd_ps(_mm256_unpackhi_pd(out_top_pd, out_bot_pd));
 
-            let out_top_ptr = data.as_mut_ptr().add(idx) as *mut f32;
-            _mm256_storeu_ps(out_top_ptr, out_top);
-            let out_bot_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
-            _mm256_storeu_ps(out_bot_ptr, out_bot);
+            // Rearrange 128-bit lanes for fully sequential output.
+            // permute2f128(a, b, 0x20): [a.lo128, b.lo128]
+            let final_0 = _mm256_permute2f128_ps(interleaved_lo, interleaved_hi, 0x20);
+            // permute2f128(a, b, 0x31): [a.hi128, b.hi128]
+            let final_1 = _mm256_permute2f128_ps(interleaved_lo, interleaved_hi, 0x31);
+
+            // Sequential stores.
+            let j = i << 1;
+            let dst_ptr = dst.as_mut_ptr().add(j) as *mut f32;
+            _mm256_storeu_ps(dst_ptr, final_0);
+            _mm256_storeu_ps(dst_ptr.add(8), final_1);
         }
+    }
 
-        super::butterfly_2_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
+    for i in simd_iters..half_samples {
+        let twiddle = stage_twiddles[i];
+        let a = src[i];
+        let b = twiddle.mul(&src[i + half_samples]);
+
+        let j = i << 1;
+        dst[j] = a.add(&b);
+        dst[j + 1] = a.sub(&b);
     }
 }
 
-/// AVX+FMA implementation: processes 4 columns at once using fused multiply-add.
-#[cfg(any(
-    not(feature = "no_std"),
-    all(target_feature = "avx", target_feature = "fma")
-))]
+/// Performs a single radix-2 Stockham butterfly stage for p>1 (out-of-place, AVX+FMA).
+///
+/// This is the generic version for p>1 cases.
 #[target_feature(enable = "avx,fma")]
-pub(super) unsafe fn butterfly_2_avx_fma(
-    data: &mut [Complex32],
+pub(super) unsafe fn butterfly_radix2_generic_avx_fma(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
+    stride: usize,
 ) {
     use core::arch::x86_64::*;
 
-    unsafe {
-        let simd_cols = ((num_columns - start_col) / 4) * 4;
+    let samples = src.len();
+    let half_samples = samples >> 1;
+    let simd_iters = (half_samples / 4) * 4;
 
-        for idx in (start_col..start_col + simd_cols).step_by(4) {
-            let u_ptr = data.as_ptr().add(idx) as *const f32;
-            let u = _mm256_loadu_ps(u_ptr);
-            let d_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
-            let d = _mm256_loadu_ps(d_ptr);
-            let tw_ptr = stage_twiddles.as_ptr().add(idx) as *const f32;
+    unsafe {
+        for i in (0..simd_iters).step_by(4) {
+            // With replicated twiddles: direct indexing, k = i % p computed during twiddle generation.
+            let k0 = i % stride;
+            let k1 = (i + 1) % stride;
+            let k2 = (i + 2) % stride;
+            let k3 = (i + 3) % stride;
+
+            // Load 4 complex numbers from first half.
+            let a_ptr = src.as_ptr().add(i) as *const f32;
+            let a = _mm256_loadu_ps(a_ptr);
+
+            // Load 4 complex numbers from second half.
+            let b_ptr = src.as_ptr().add(i + half_samples) as *const f32;
+            let b = _mm256_loadu_ps(b_ptr);
+
+            // Load twiddles contiguously.
+            let tw_ptr = stage_twiddles.as_ptr().add(i) as *const f32;
             let tw = _mm256_loadu_ps(tw_ptr);
 
-            // Complex multiply using FMA: t = tw * d
-            let tw_re = _mm256_shuffle_ps(tw, tw, 0b10_10_00_00);
-            let tw_im = _mm256_shuffle_ps(tw, tw, 0b11_11_01_01);
+            // Complex multiply: t = tw * b using FMA.
+            let b_re = _mm256_moveldup_ps(b); // [b0.re, b0.re, b1.re, b1.re, ...]
+            let b_im = _mm256_movehdup_ps(b); // [b0.im, b0.im, b1.im, b1.im, ...]
+            let tw_swap = _mm256_permute_ps(tw, 0b10_11_00_01); // Swap re/im
+            let prod_im = _mm256_mul_ps(tw_swap, b_im);
+            let t = _mm256_fmaddsub_ps(tw, b_re, prod_im);
 
-            // Swap d for imaginary component: [d.im, d.re, d.im, d.re, ...]
-            let d_swap = _mm256_shuffle_ps(d, d, 0b10_11_00_01);
+            // Butterfly: out_top = a + t, out_bot = a - t
+            let out_top = _mm256_add_ps(a, t);
+            let out_bot = _mm256_sub_ps(a, t);
 
-            // Multiply imaginary parts: [tw.im*d.im, tw.im*d.re, ...]
-            let prod_im = _mm256_mul_ps(tw_im, d_swap);
+            // Calculate output indices: j = (i << 1) - k
+            let j0 = (i << 1) - k0;
+            let j1 = ((i + 1) << 1) - k1;
+            let j2 = ((i + 2) << 1) - k2;
+            let j3 = ((i + 3) << 1) - k3;
 
-            // FMA: fmaddsub computes [a*b - c, a*b + c, a*b - c, a*b + c, ...]
-            // Result: [tw.re*d.re - tw.im*d.im, tw.re*d.im + tw.im*d.re, ...]
-            let t = _mm256_fmaddsub_ps(tw_re, d, prod_im);
+            // Direct SIMD stores (no temp arrays).
+            // Use 64-bit stores for each complex number.
+            let out_top_pd = _mm256_castps_pd(out_top);
+            let out_bot_pd = _mm256_castps_pd(out_bot);
 
-            // Butterfly operations
-            let out_top = _mm256_add_ps(u, t);
-            let out_bot = _mm256_sub_ps(u, t);
+            // Extract and store each complex number.
+            let dst_ptr = dst.as_mut_ptr() as *mut f64;
 
-            let out_top_ptr = data.as_mut_ptr().add(idx) as *mut f32;
-            _mm256_storeu_ps(out_top_ptr, out_top);
-            let out_bot_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
-            _mm256_storeu_ps(out_bot_ptr, out_bot);
+            // Store complex numbers using _mm_storel_pd.
+            let top_lo128 = _mm256_castpd256_pd128(out_top_pd);
+            let bot_lo128 = _mm256_castpd256_pd128(out_bot_pd);
+            let top_hi128 = _mm256_extractf128_pd(out_top_pd, 1);
+            let bot_hi128 = _mm256_extractf128_pd(out_bot_pd, 1);
+
+            _mm_storel_pd(dst_ptr.add(j0), top_lo128);
+            _mm_storel_pd(dst_ptr.add(j0 + stride), bot_lo128);
+
+            _mm_storeh_pd(dst_ptr.add(j1), top_lo128);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride), bot_lo128);
+
+            _mm_storel_pd(dst_ptr.add(j2), top_hi128);
+            _mm_storel_pd(dst_ptr.add(j2 + stride), bot_hi128);
+
+            _mm_storeh_pd(dst_ptr.add(j3), top_hi128);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride), bot_hi128);
         }
+    }
 
-        super::butterfly_2_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
+    for i in simd_iters..half_samples {
+        let k = i % stride;
+        let twiddle = stage_twiddles[i];
+
+        let a = src[i];
+        let b = twiddle.mul(&src[i + half_samples]);
+
+        let j = (i << 1) - k;
+        dst[j] = a.add(&b);
+        dst[j + stride] = a.sub(&b);
     }
 }

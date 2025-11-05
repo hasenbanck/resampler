@@ -1,44 +1,50 @@
-//! AVX-512 optimized FIR convolution implementation with streaming loads.
+//! AVX-512 optimized FIR convolution implementation with aligned loads.
 
-/// AVX-512 implementation of FIR convolution (dot product) with FMA.
-/// Uses streaming loads for coefficients to reduce cache pollution.
-#[cfg(any(
-    all(target_arch = "x86_64", target_feature = "avx512f", feature = "no_std"),
-    not(feature = "no_std")
-))]
+/// AVX-512 implementation of dual-phase FIR convolution with interpolation.
 #[target_feature(enable = "avx512f")]
-pub(crate) unsafe fn convolve_avx512(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
+pub(crate) unsafe fn convolve_interp_avx512(
+    input: &[f32],
+    coeffs1: &[f32],
+    coeffs2: &[f32],
+    frac: f32,
+    taps: usize,
+) -> f32 {
     use core::arch::x86_64::*;
 
     unsafe {
         const SIMD_WIDTH: usize = 16;
         let simd_iterations = taps / SIMD_WIDTH;
 
-        debug_assert_eq!(
-            coeffs.as_ptr().addr() % 64,
-            0,
-            "Coefficient data must be 64-byte aligned for streaming loads"
-        );
+        assert_eq!(coeffs1.as_ptr().addr() % 64, 0);
+        assert_eq!(coeffs2.as_ptr().addr() % 64, 0);
 
-        // Initialize accumulator to zero.
-        let mut acc = _mm512_setzero_ps();
+        // Initialize dual accumulators to zero.
+        let mut acc1 = _mm512_setzero_ps();
+        let mut acc2 = _mm512_setzero_ps();
 
         for i in 0..simd_iterations {
             let offset = i * SIMD_WIDTH;
 
-            // Regular unaligned load for input (benefits from cache).
+            // Regular unaligned load for input (benefits from cache) - load once.
             let input_vec = _mm512_loadu_ps(input.as_ptr().add(offset));
 
-            // Streaming load for coefficients (bypasses cache to reduce pollution).
-            // _mm512_stream_load_si512 requires __m512i*, so we cast and then convert.
-            let coeffs_ptr = coeffs.as_ptr().add(offset) as *const __m512i;
-            let coeffs_vec = _mm512_castsi512_ps(_mm512_stream_load_si512(coeffs_ptr));
+            // Aligned loads for both coefficient phases.
+            let coeffs_vec1 = _mm512_load_ps(coeffs1.as_ptr().add(offset));
+            let coeffs_vec2 = _mm512_load_ps(coeffs2.as_ptr().add(offset));
 
-            // Fused multiply-add: acc = acc + (coeffs_vec * input_vec).
-            acc = _mm512_fmadd_ps(coeffs_vec, input_vec, acc);
+            // Fused multiply-add for both phases.
+            acc1 = _mm512_fmadd_ps(coeffs_vec1, input_vec, acc1);
+            acc2 = _mm512_fmadd_ps(coeffs_vec2, input_vec, acc2);
         }
 
+        // Interpolate before horizontal reduction to avoid two reductions.
+        let frac_vec = _mm512_set1_ps(frac);
+        let one_minus_frac = _mm512_set1_ps(1.0 - frac);
+        let weighted1 = _mm512_mul_ps(acc1, one_minus_frac);
+        let weighted2 = _mm512_mul_ps(acc2, frac_vec);
+        let interpolated = _mm512_add_ps(weighted1, weighted2);
+
         // Horizontal sum.
-        _mm512_reduce_add_ps(acc)
+        _mm512_reduce_add_ps(interpolated)
     }
 }

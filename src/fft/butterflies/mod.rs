@@ -4,26 +4,53 @@ mod butterfly4;
 mod butterfly5;
 mod butterfly7;
 
-pub(crate) use butterfly2::*;
-pub(crate) use butterfly3::*;
-pub(crate) use butterfly4::*;
-pub(crate) use butterfly5::*;
-pub(crate) use butterfly7::*;
+pub(crate) use butterfly2::butterfly_radix2_dispatch;
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+pub(crate) use butterfly2::{
+    butterfly_radix2_generic_avx_fma_dispatch, butterfly_radix2_generic_sse2_dispatch,
+    butterfly_radix2_generic_sse4_2_dispatch, butterfly_radix2_stride1_avx_fma_dispatch,
+    butterfly_radix2_stride1_sse2_dispatch, butterfly_radix2_stride1_sse4_2_dispatch,
+};
+pub(crate) use butterfly3::butterfly_radix3_dispatch;
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+pub(crate) use butterfly3::{
+    butterfly_radix3_generic_avx_fma_dispatch, butterfly_radix3_generic_sse2_dispatch,
+    butterfly_radix3_generic_sse4_2_dispatch, butterfly_radix3_stride1_avx_fma_dispatch,
+    butterfly_radix3_stride1_sse2_dispatch, butterfly_radix3_stride1_sse4_2_dispatch,
+};
+pub(crate) use butterfly4::butterfly_radix4_dispatch;
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+pub(crate) use butterfly4::{
+    butterfly_radix4_generic_avx_fma_dispatch, butterfly_radix4_generic_sse2_dispatch,
+    butterfly_radix4_generic_sse4_2_dispatch, butterfly_radix4_stride1_avx_fma_dispatch,
+    butterfly_radix4_stride1_sse2_dispatch, butterfly_radix4_stride1_sse4_2_dispatch,
+};
+pub(crate) use butterfly5::butterfly_radix5_dispatch;
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+pub(crate) use butterfly5::{
+    butterfly_radix5_generic_avx_fma_dispatch, butterfly_radix5_generic_sse2_dispatch,
+    butterfly_radix5_generic_sse4_2_dispatch, butterfly_radix5_stride1_avx_fma_dispatch,
+    butterfly_radix5_stride1_sse2_dispatch, butterfly_radix5_stride1_sse4_2_dispatch,
+};
+pub(crate) use butterfly7::butterfly_radix7_dispatch;
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+pub(crate) use butterfly7::{
+    butterfly_radix7_generic_avx_fma_dispatch, butterfly_radix7_generic_sse2_dispatch,
+    butterfly_radix7_generic_sse4_2_dispatch, butterfly_radix7_stride1_avx_fma_dispatch,
+    butterfly_radix7_stride1_sse2_dispatch, butterfly_radix7_stride1_sse4_2_dispatch,
+};
 
 #[cfg(test)]
-mod test_helpers {
+mod tests {
     use alloc::{format, vec};
-    use core::f32;
 
-    use crate::Complex32;
+    use crate::fft::Complex32;
 
-    /// Helper function to check if two complex numbers are approximately equal
-    pub fn approx_eq_complex(a: &Complex32, b: &Complex32, epsilon: f32) -> bool {
+    fn approx_eq_complex(a: &Complex32, b: &Complex32, epsilon: f32) -> bool {
         (a.re - b.re).abs() < epsilon && (a.im - b.im).abs() < epsilon
     }
 
-    /// Helper function to compare two complex arrays with approximate equality
-    pub fn assert_complex_arrays_approx_eq(
+    fn assert_complex_arrays_approx_eq(
         actual: &[Complex32],
         expected: &[Complex32],
         epsilon: f32,
@@ -32,75 +59,165 @@ mod test_helpers {
         assert_eq!(
             actual.len(),
             expected.len(),
-            "{}: Array lengths differ",
-            context
+            "{context}: Array lengths differ",
         );
 
         for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                approx_eq_complex(a, e, epsilon),
-                "{}: Mismatch at index {}: actual = ({}, {}), expected = ({}, {}), diff = ({}, {})",
-                context,
-                i,
-                a.re,
-                a.im,
-                e.re,
-                e.im,
-                (a.re - e.re).abs(),
-                (a.im - e.im).abs()
-            );
+            // Check for NaN/Infinity mismatches first (these indicate serious bugs).
+            let a_finite = a.re.is_finite() && a.im.is_finite();
+            let e_finite = e.re.is_finite() && e.im.is_finite();
+
+            if a_finite != e_finite {
+                panic!(
+                    "{context}: Finite/infinite mismatch at index {i}: actual = ({}, {}), expected = ({}, {})",
+                    a.re, a.im, e.re, e.im
+                );
+            }
+
+            // For finite values, check if the error is suspiciously large.
+            // This catches cases where bit corruption produces wildly wrong values.
+            if a_finite {
+                let re_diff = (a.re - e.re).abs();
+                let im_diff = (a.im - e.im).abs();
+
+                // If error is more than 1000x the tolerance, it's likely a serious bug.
+                let suspicious_threshold = epsilon * 1000.0;
+                if re_diff > suspicious_threshold || im_diff > suspicious_threshold {
+                    panic!(
+                        "{context}: SUSPICIOUS LARGE ERROR at index {i}: \
+                         actual = ({}, {}), expected = ({}, {}), diff = ({re_diff}, {im_diff}) \
+                         (exceeds suspicious threshold {suspicious_threshold})",
+                        a.re, a.im, e.re, e.im
+                    );
+                }
+
+                assert!(
+                    approx_eq_complex(a, e, epsilon),
+                    "{context}: Mismatch at index {i}: actual = ({}, {}), expected = ({}, {}), diff = ({}, {})",
+                    a.re,
+                    a.im,
+                    e.re,
+                    e.im,
+                    re_diff,
+                    im_diff
+                );
+            }
         }
     }
 
     /// Generic test helper for butterfly functions.
     /// Tests a SIMD implementation against a scalar reference implementation.
-    ///
-    /// # Arguments
-    /// * `scalar_fn` - Reference scalar implementation
-    /// * `simd_fn` - SIMD implementation to test (wrapped in closure for unsafe calls)
-    /// * `radix` - The radix of the butterfly (2 for radix-2, 3 for radix-3, etc.)
-    /// * `twiddles_per_column` - Number of twiddle factors per column
-    /// * `test_name` - Name for error messages
-    pub fn test_butterfly_against_scalar<F, G>(
+    pub(super) fn test_butterfly_against_scalar<F, G>(
         scalar_fn: F,
         simd_fn: G,
         radix: usize,
-        twiddles_per_column: usize,
+        twiddles_per_stride: usize,
         test_name: &str,
     ) where
-        F: Fn(&mut [Complex32], &[Complex32], usize),
-        G: Fn(&mut [Complex32], &[Complex32], usize),
+        F: Fn(&[Complex32], &mut [Complex32], &[Complex32], usize),
+        G: Fn(&[Complex32], &mut [Complex32], &[Complex32], usize),
     {
-        let test_sizes = vec![1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33];
+        let test_configs = vec![
+            // Radix-2 and radix-4 configs (powers of 2)
+            (1, 16),   // stride=1, samples=16
+            (1, 32),   // stride=1, samples=32
+            (1, 64),   // stride=1, samples=64
+            (2, 16),   // stride=2, samples=16
+            (2, 32),   // stride=2, samples=32
+            (4, 32),   // stride=4, samples=32
+            (4, 64),   // stride=4, samples=64
+            (8, 64),   // stride=8, samples=64
+            (8, 128),  // stride=8, samples=128
+            (16, 128), // stride=16, samples=128
+            // Radix-3 configs (divisible by 3, samples/3 >= 8 for AVX SIMD)
+            (1, 24), // stride=1, samples=24
+            (1, 30), // stride=1, samples=30
+            (1, 36), // stride=1, samples=36
+            (1, 48), // stride=1, samples=48
+            (1, 60), // stride=1, samples=60
+            // Radix-5 configs (divisible by 5, samples/5 >= 8 for AVX SIMD)
+            (1, 40), // stride=1, samples=40
+            (1, 50), // stride=1, samples=50
+            (1, 60), // stride=1, samples=60
+            (1, 80), // stride=1, samples=80
+            // Radix-7 configs (divisible by 7, samples/7 >= 8 for AVX SIMD)
+            (1, 56),  // stride=1, samples=56
+            (1, 70),  // stride=1, samples=70
+            (1, 84),  // stride=1, samples=84
+            (1, 112), // stride=1, samples=112
+        ];
 
-        for num_columns in test_sizes {
-            let mut scalar_data = vec![Complex32::zero(); radix * num_columns];
-            let mut simd_data = vec![Complex32::zero(); radix * num_columns];
+        for (stride, samples) in test_configs {
+            if samples % radix != 0 {
+                continue;
+            }
 
-            for i in 0..scalar_data.len() {
+            let mut src = vec![Complex32::zero(); samples];
+            for i in 0..samples {
                 #[cfg(not(feature = "no_std"))]
                 let val = Complex32::new((i as f32 * 0.5).sin(), (i as f32 * 0.3).cos());
                 #[cfg(feature = "no_std")]
                 let val = Complex32::new(libm::sinf(i as f32 * 0.5), libm::cosf(i as f32 * 0.3));
-                scalar_data[i] = val;
-                simd_data[i] = val;
+                src[i] = val;
             }
 
-            let mut twiddles = vec![Complex32::zero(); num_columns * twiddles_per_column];
-            for i in 0..twiddles.len() {
-                let angle = 2.0 * f32::consts::PI * (i as f32) / (num_columns as f32);
-                #[cfg(not(feature = "no_std"))]
-                let tw = Complex32::new(angle.cos(), angle.sin());
-                #[cfg(feature = "no_std")]
-                let tw = Complex32::new(libm::cosf(angle), libm::sinf(angle));
-                twiddles[i] = tw;
+            let iterations = samples / radix;
+            let mut twiddles = vec![Complex32::zero(); iterations * twiddles_per_stride];
+            for i in 0..iterations {
+                let col = i % stride;
+                for k in 0..twiddles_per_stride {
+                    let angle = 2.0 * core::f32::consts::PI * (col as f32 * (k + 1) as f32)
+                        / (stride as f32 * radix as f32);
+                    #[cfg(not(feature = "no_std"))]
+                    let tw = Complex32::new(angle.cos(), angle.sin());
+                    #[cfg(feature = "no_std")]
+                    let tw = Complex32::new(libm::cosf(angle), libm::sinf(angle));
+                    twiddles[i * twiddles_per_stride + k] = tw;
+                }
             }
 
-            scalar_fn(&mut scalar_data, &twiddles, num_columns);
-            simd_fn(&mut simd_data, &twiddles, num_columns);
+            let mut dst_scalar = vec![Complex32::zero(); samples];
+            let mut dst_simd = vec![Complex32::zero(); samples];
 
-            let context = format!("{} with {} columns", test_name, num_columns);
-            assert_complex_arrays_approx_eq(&simd_data, &scalar_data, 1e-6, &context);
+            scalar_fn(&src, &mut dst_scalar, &twiddles, stride);
+            simd_fn(&src, &mut dst_simd, &twiddles, stride);
+
+            let context = format!("{test_name} with p={stride}, samples={samples}");
+            assert_complex_arrays_approx_eq(&dst_simd, &dst_scalar, 1e-6, &context);
+
+            // Additional test with specific bit patterns that would expose mask bugs.
+            // These values have bit patterns that would be corrupted by XOR with 0xFFFFFFFF.
+            if samples >= radix * 2 {
+                let sensitive_values = [
+                    1.0_f32,
+                    -1.0_f32,
+                    2.0_f32,
+                    0.5_f32,
+                    -0.5_f32,
+                    core::f32::consts::PI,
+                    core::f32::consts::E,
+                    0.1_f32,
+                ];
+
+                for (idx, val) in src
+                    .iter_mut()
+                    .enumerate()
+                    .take(sensitive_values.len().min(samples))
+                {
+                    let sv = sensitive_values[idx % sensitive_values.len()];
+                    *val = Complex32::new(sv, -sv);
+                }
+
+                let mut dst_scalar2 = vec![Complex32::zero(); samples];
+                let mut dst_simd2 = vec![Complex32::zero(); samples];
+
+                scalar_fn(&src, &mut dst_scalar2, &twiddles, stride);
+                simd_fn(&src, &mut dst_simd2, &twiddles, stride);
+
+                let context2 =
+                    format!("{test_name} (bit-sensitive) with p={stride}, samples={samples}");
+                assert_complex_arrays_approx_eq(&dst_simd2, &dst_scalar2, 1e-6, &context2);
+            }
         }
     }
 }

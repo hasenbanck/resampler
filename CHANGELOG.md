@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2025-11-05
+
+This patch changes the internal FFT implementation to the Stockham Autosort algorithm which improves the performance
+of the `ResamplerFft` greatly again. We also improved the `ResamplerFir` performance a bit:
+
+- The `ResamplerFft` benchmarks are on my M4 Max 42% to 54% faster (~515 to ~826 MiB/s).
+- The `ResamplerFft` benchmarks are on my AMD Ryzen 9 9950X3D 0% to 52% faster (~780 to ~1192 MiB/s).
+- The `ResamplerFir` benchmarks are on my AMD Ryzen 9 9950X3D 27% to 34% faster (~503 to ~540 MiB/s).
+
+### Changed
+
+- Improved performance for `ResamplerFft` by changing the algorithm to the Stockham Autosort algorithm.
+- Improved performance for `ResamplerFir` by merging two convolve functions into one improving the performance.
+- Internally we now target 4 SIMD profiles: SSE2, SSE4.2, AVX+FMA and AVX-512. This lessens the maintenance burden and
+  aligned to the x86-64-v1, x86-64-v2, x86-64-v3, x86-64-v4 microarchitectures. 
+
 ## [0.3.2] - 2025-11-02
 
 For this patch we focused on improving the performance of both the FFT and FIR version:

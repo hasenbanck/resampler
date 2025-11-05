@@ -1,278 +1,72 @@
-#[cfg(any(test, not(feature = "no_std"), target_feature = "avx"))]
-use crate::Complex32;
+use super::{COS_2PI_7, COS_4PI_7, COS_6PI_7, SIN_2PI_7, SIN_4PI_7, SIN_6PI_7};
+use crate::fft::Complex32;
 
-/// AVX implementation: processes 4 columns at once.
-#[cfg(any(
-    test,
-    not(feature = "no_std"),
-    all(target_feature = "avx", not(target_feature = "fma"))
-))]
-#[target_feature(enable = "avx")]
-pub(super) unsafe fn butterfly_7_avx(
-    data: &mut [Complex32],
-    stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
-) {
-    use core::arch::x86_64::*;
-
-    unsafe {
-        let simd_cols = ((num_columns - start_col) / 4) * 4;
-
-        // Broadcast W7 constants for SIMD operations.
-        let w7_1_re = _mm256_set1_ps(super::W7_1_RE);
-        let w7_1_im = _mm256_set1_ps(super::W7_1_IM);
-        let w7_2_re = _mm256_set1_ps(super::W7_2_RE);
-        let w7_2_im = _mm256_set1_ps(super::W7_2_IM);
-        let w7_3_re = _mm256_set1_ps(super::W7_3_RE);
-        let w7_3_im = _mm256_set1_ps(super::W7_3_IM);
-        let w7_4_re = _mm256_set1_ps(super::W7_4_RE);
-        let w7_4_im = _mm256_set1_ps(super::W7_4_IM);
-        let w7_5_re = _mm256_set1_ps(super::W7_5_RE);
-        let w7_5_im = _mm256_set1_ps(super::W7_5_IM);
-        let w7_6_re = _mm256_set1_ps(super::W7_6_RE);
-        let w7_6_im = _mm256_set1_ps(super::W7_6_IM);
-
-        for idx in (start_col..start_col + simd_cols).step_by(4) {
-            // Load 4 complex numbers from each row.
-            let x0_ptr = data.as_ptr().add(idx) as *const f32;
-            let x0 = _mm256_loadu_ps(x0_ptr);
-
-            let x1_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
-            let x1 = _mm256_loadu_ps(x1_ptr);
-
-            let x2_ptr = data.as_ptr().add(idx + 2 * num_columns) as *const f32;
-            let x2 = _mm256_loadu_ps(x2_ptr);
-
-            let x3_ptr = data.as_ptr().add(idx + 3 * num_columns) as *const f32;
-            let x3 = _mm256_loadu_ps(x3_ptr);
-
-            let x4_ptr = data.as_ptr().add(idx + 4 * num_columns) as *const f32;
-            let x4 = _mm256_loadu_ps(x4_ptr);
-
-            let x5_ptr = data.as_ptr().add(idx + 5 * num_columns) as *const f32;
-            let x5 = _mm256_loadu_ps(x5_ptr);
-
-            let x6_ptr = data.as_ptr().add(idx + 6 * num_columns) as *const f32;
-            let x6 = _mm256_loadu_ps(x6_ptr);
-
-            // Load 24 twiddle factors for 4 columns.
-            let tw_ptr = stage_twiddles.as_ptr().add(idx * 6) as *const f32;
-            let tw_0 = _mm256_loadu_ps(tw_ptr); // w1[0], w2[0], w3[0], w4[0]
-            let tw_1 = _mm256_loadu_ps(tw_ptr.add(8)); // w5[0], w6[0], w1[1], w2[1]
-            let tw_2 = _mm256_loadu_ps(tw_ptr.add(16)); // w3[1], w4[1], w5[1], w6[1]
-            let tw_3 = _mm256_loadu_ps(tw_ptr.add(24)); // w1[2], w2[2], w3[2], w4[2]
-            let tw_4 = _mm256_loadu_ps(tw_ptr.add(32)); // w5[2], w6[2], w1[3], w2[3]
-            let tw_5 = _mm256_loadu_ps(tw_ptr.add(40)); // w3[3], w4[3], w5[3], w6[3]
-
-            // Extract w1, w2, w3, w4, w5, w6 for all 4 columns using permute and shuffle.
-            let temp_0 = _mm256_permute2f128_ps(tw_0, tw_3, 0x20);
-            let temp_1 = _mm256_permute2f128_ps(tw_1, tw_4, 0x20);
-            let temp_2 = _mm256_permute2f128_ps(tw_0, tw_3, 0x31);
-            let temp_3 = _mm256_permute2f128_ps(tw_1, tw_4, 0x31);
-            let temp_4 = _mm256_permute2f128_ps(tw_2, tw_5, 0x20);
-            let temp_5 = _mm256_permute2f128_ps(tw_2, tw_5, 0x31);
-
-            let w1 = _mm256_shuffle_ps(temp_0, temp_3, 0b01_00_01_00);
-            let w2 = _mm256_shuffle_ps(temp_0, temp_3, 0b11_10_11_10);
-            let w3 = _mm256_shuffle_ps(temp_2, temp_4, 0b01_00_01_00);
-            let w4 = _mm256_shuffle_ps(temp_2, temp_4, 0b11_10_11_10);
-            let w5 = _mm256_shuffle_ps(temp_1, temp_5, 0b01_00_01_00);
-            let w6 = _mm256_shuffle_ps(temp_1, temp_5, 0b11_10_11_10);
-
-            // Helper macro for complex multiply using AVX addsub.
-            macro_rules! cmul_avx {
-                ($x:expr, $w:expr) => {{
-                    let w_re = _mm256_shuffle_ps($w, $w, 0b10_10_00_00);
-                    let w_im = _mm256_shuffle_ps($w, $w, 0b11_11_01_01);
-                    let prod_re = _mm256_mul_ps(w_re, $x);
-                    let x_swap = _mm256_shuffle_ps($x, $x, 0b10_11_00_01);
-                    let prod_im = _mm256_mul_ps(w_im, x_swap);
-                    _mm256_addsub_ps(prod_re, prod_im)
-                }};
-            }
-
-            // Complex multiply: t1 = x1 * w1, t2 = x2 * w2, etc.
-            let t1 = cmul_avx!(x1, w1);
-            let t2 = cmul_avx!(x2, w2);
-            let t3 = cmul_avx!(x3, w3);
-            let t4 = cmul_avx!(x4, w4);
-            let t5 = cmul_avx!(x5, w5);
-            let t6 = cmul_avx!(x6, w6);
-
-            // Y0 = x0 + t1 + t2 + t3 + t4 + t5 + t6
-            let y0 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1), _mm256_add_ps(t2, t3)),
-                _mm256_add_ps(_mm256_add_ps(t4, t5), t6),
-            );
-
-            // Helper macro for complex multiply by W7 constant.
-            macro_rules! cmul_w7 {
-                ($t:expr, $w_re:expr, $w_im:expr) => {{
-                    let t_re = _mm256_shuffle_ps($t, $t, 0b10_10_00_00);
-                    let t_im = _mm256_shuffle_ps($t, $t, 0b11_11_01_01);
-                    let re = _mm256_sub_ps(_mm256_mul_ps(t_re, $w_re), _mm256_mul_ps(t_im, $w_im));
-                    let im = _mm256_add_ps(_mm256_mul_ps(t_re, $w_im), _mm256_mul_ps(t_im, $w_re));
-                    let lo = _mm256_unpacklo_ps(re, im);
-                    let hi = _mm256_unpackhi_ps(re, im);
-                    _mm256_shuffle_ps(lo, hi, 0b01_00_01_00)
-                }};
-            }
-
-            // Y1 = x0 + t1*W_7^1 + t2*W_7^2 + t3*W_7^3 + t4*W_7^4 + t5*W_7^5 + t6*W_7^6
-            let t1_w71 = cmul_w7!(t1, w7_1_re, w7_1_im);
-            let t2_w72 = cmul_w7!(t2, w7_2_re, w7_2_im);
-            let t3_w73 = cmul_w7!(t3, w7_3_re, w7_3_im);
-            let t4_w74 = cmul_w7!(t4, w7_4_re, w7_4_im);
-            let t5_w75 = cmul_w7!(t5, w7_5_re, w7_5_im);
-            let t6_w76 = cmul_w7!(t6, w7_6_re, w7_6_im);
-
-            let y1 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w71), _mm256_add_ps(t2_w72, t3_w73)),
-                _mm256_add_ps(_mm256_add_ps(t4_w74, t5_w75), t6_w76),
-            );
-
-            // Y2 = x0 + t1*W_7^2 + t2*W_7^4 + t3*W_7^6 + t4*W_7^1 + t5*W_7^3 + t6*W_7^5
-            let t1_w72 = cmul_w7!(t1, w7_2_re, w7_2_im);
-            let t2_w74 = cmul_w7!(t2, w7_4_re, w7_4_im);
-            let t3_w76 = cmul_w7!(t3, w7_6_re, w7_6_im);
-            let t4_w71 = cmul_w7!(t4, w7_1_re, w7_1_im);
-            let t5_w73 = cmul_w7!(t5, w7_3_re, w7_3_im);
-            let t6_w75 = cmul_w7!(t6, w7_5_re, w7_5_im);
-
-            let y2 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w72), _mm256_add_ps(t2_w74, t3_w76)),
-                _mm256_add_ps(_mm256_add_ps(t4_w71, t5_w73), t6_w75),
-            );
-
-            // Y3 = x0 + t1*W_7^3 + t2*W_7^6 + t3*W_7^2 + t4*W_7^5 + t5*W_7^1 + t6*W_7^4
-            let t1_w73 = cmul_w7!(t1, w7_3_re, w7_3_im);
-            let t2_w76 = cmul_w7!(t2, w7_6_re, w7_6_im);
-            let t3_w72 = cmul_w7!(t3, w7_2_re, w7_2_im);
-            let t4_w75 = cmul_w7!(t4, w7_5_re, w7_5_im);
-            let t5_w71 = cmul_w7!(t5, w7_1_re, w7_1_im);
-            let t6_w74 = cmul_w7!(t6, w7_4_re, w7_4_im);
-
-            let y3 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w73), _mm256_add_ps(t2_w76, t3_w72)),
-                _mm256_add_ps(_mm256_add_ps(t4_w75, t5_w71), t6_w74),
-            );
-
-            // Y4 = x0 + t1*W_7^4 + t2*W_7^1 + t3*W_7^5 + t4*W_7^2 + t5*W_7^6 + t6*W_7^3
-            let t1_w74 = cmul_w7!(t1, w7_4_re, w7_4_im);
-            let t2_w71 = cmul_w7!(t2, w7_1_re, w7_1_im);
-            let t3_w75 = cmul_w7!(t3, w7_5_re, w7_5_im);
-            let t4_w72 = cmul_w7!(t4, w7_2_re, w7_2_im);
-            let t5_w76 = cmul_w7!(t5, w7_6_re, w7_6_im);
-            let t6_w73 = cmul_w7!(t6, w7_3_re, w7_3_im);
-
-            let y4 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w74), _mm256_add_ps(t2_w71, t3_w75)),
-                _mm256_add_ps(_mm256_add_ps(t4_w72, t5_w76), t6_w73),
-            );
-
-            // Y5 = x0 + t1*W_7^5 + t2*W_7^3 + t3*W_7^1 + t4*W_7^6 + t5*W_7^4 + t6*W_7^2
-            let t1_w75 = cmul_w7!(t1, w7_5_re, w7_5_im);
-            let t2_w73 = cmul_w7!(t2, w7_3_re, w7_3_im);
-            let t3_w71 = cmul_w7!(t3, w7_1_re, w7_1_im);
-            let t4_w76 = cmul_w7!(t4, w7_6_re, w7_6_im);
-            let t5_w74 = cmul_w7!(t5, w7_4_re, w7_4_im);
-            let t6_w72 = cmul_w7!(t6, w7_2_re, w7_2_im);
-
-            let y5 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w75), _mm256_add_ps(t2_w73, t3_w71)),
-                _mm256_add_ps(_mm256_add_ps(t4_w76, t5_w74), t6_w72),
-            );
-
-            // Y6 = x0 + t1*W_7^6 + t2*W_7^5 + t3*W_7^4 + t4*W_7^3 + t5*W_7^2 + t6*W_7^1
-            let t1_w76 = cmul_w7!(t1, w7_6_re, w7_6_im);
-            let t2_w75 = cmul_w7!(t2, w7_5_re, w7_5_im);
-            let t3_w74 = cmul_w7!(t3, w7_4_re, w7_4_im);
-            let t4_w73 = cmul_w7!(t4, w7_3_re, w7_3_im);
-            let t5_w72 = cmul_w7!(t5, w7_2_re, w7_2_im);
-            let t6_w71 = cmul_w7!(t6, w7_1_re, w7_1_im);
-
-            let y6 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w76), _mm256_add_ps(t2_w75, t3_w74)),
-                _mm256_add_ps(_mm256_add_ps(t4_w73, t5_w72), t6_w71),
-            );
-
-            let y0_ptr = data.as_mut_ptr().add(idx) as *mut f32;
-            _mm256_storeu_ps(y0_ptr, y0);
-            let y1_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
-            _mm256_storeu_ps(y1_ptr, y1);
-            let y2_ptr = data.as_mut_ptr().add(idx + 2 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y2_ptr, y2);
-            let y3_ptr = data.as_mut_ptr().add(idx + 3 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y3_ptr, y3);
-            let y4_ptr = data.as_mut_ptr().add(idx + 4 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y4_ptr, y4);
-            let y5_ptr = data.as_mut_ptr().add(idx + 5 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y5_ptr, y5);
-            let y6_ptr = data.as_mut_ptr().add(idx + 6 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y6_ptr, y6);
-        }
-
-        super::butterfly_7_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
-    }
-}
-
-/// AVX+FMA implementation: processes 4 columns at once using fused multiply-add.
-#[cfg(any(
-    not(feature = "no_std"),
-    all(target_feature = "avx", target_feature = "fma")
-))]
+/// Performs a single radix-7 Stockham butterfly stage (out-of-place, AVX+FMA) for stride=1 (first stage).
 #[target_feature(enable = "avx,fma")]
-pub(super) unsafe fn butterfly_7_avx_fma(
-    data: &mut [Complex32],
+pub(super) unsafe fn butterfly_radix7_stride1_avx_fma(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
 ) {
     use core::arch::x86_64::*;
 
+    let samples = src.len();
+    let seventh_samples = samples / 7;
+    let simd_iters = (seventh_samples / 4) * 4;
+
+    // Macro for complex multiplication: result = w * z.
+    macro_rules! cmul_avx {
+        ($w:expr, $z:expr) => {{
+            let z_re = _mm256_moveldup_ps($z);
+            let z_im = _mm256_movehdup_ps($z);
+            let w_swap = _mm256_permute_ps($w, 0b10_11_00_01);
+            let prod_im = _mm256_mul_ps(w_swap, z_im);
+            _mm256_fmaddsub_ps($w, z_re, prod_im)
+        }};
+    }
+
+    // Macro for computing radix-7 outputs using pure SIMD FMA chains.
+    macro_rules! compute_output_avx {
+        ($z0:expr, $cos1:expr, $sin1:expr, $cos2:expr, $sin2:expr, $cos3:expr, $sin3:expr, $a1:expr, $a2:expr, $a3:expr, $b1:expr, $b2:expr, $b3:expr) => {{
+            let c = _mm256_fmadd_ps(
+                $cos3,
+                $a3,
+                _mm256_fmadd_ps($cos2, $a2, _mm256_fmadd_ps($cos1, $a1, $z0)),
+            );
+            let d = _mm256_fmadd_ps(
+                $sin3,
+                $b3,
+                _mm256_fmadd_ps($sin2, $b2, _mm256_mul_ps($sin1, $b1)),
+            );
+            _mm256_add_ps(c, d)
+        }};
+    }
+
     unsafe {
-        let simd_cols = ((num_columns - start_col) / 4) * 4;
+        for i in (0..simd_iters).step_by(4) {
+            let z0_ptr = src.as_ptr().add(i) as *const f32;
+            let z0 = _mm256_loadu_ps(z0_ptr);
 
-        // Broadcast W7 constants for SIMD operations.
-        let w7_1_re = _mm256_set1_ps(super::W7_1_RE);
-        let w7_1_im = _mm256_set1_ps(super::W7_1_IM);
-        let w7_2_re = _mm256_set1_ps(super::W7_2_RE);
-        let w7_2_im = _mm256_set1_ps(super::W7_2_IM);
-        let w7_3_re = _mm256_set1_ps(super::W7_3_RE);
-        let w7_3_im = _mm256_set1_ps(super::W7_3_IM);
-        let w7_4_re = _mm256_set1_ps(super::W7_4_RE);
-        let w7_4_im = _mm256_set1_ps(super::W7_4_IM);
-        let w7_5_re = _mm256_set1_ps(super::W7_5_RE);
-        let w7_5_im = _mm256_set1_ps(super::W7_5_IM);
-        let w7_6_re = _mm256_set1_ps(super::W7_6_RE);
-        let w7_6_im = _mm256_set1_ps(super::W7_6_IM);
+            let z1_ptr = src.as_ptr().add(i + seventh_samples) as *const f32;
+            let z1 = _mm256_loadu_ps(z1_ptr);
 
-        for idx in (start_col..start_col + simd_cols).step_by(4) {
-            // Load 4 complex numbers from each row.
-            let x0_ptr = data.as_ptr().add(idx) as *const f32;
-            let x0 = _mm256_loadu_ps(x0_ptr);
+            let z2_ptr = src.as_ptr().add(i + seventh_samples * 2) as *const f32;
+            let z2 = _mm256_loadu_ps(z2_ptr);
 
-            let x1_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
-            let x1 = _mm256_loadu_ps(x1_ptr);
+            let z3_ptr = src.as_ptr().add(i + seventh_samples * 3) as *const f32;
+            let z3 = _mm256_loadu_ps(z3_ptr);
 
-            let x2_ptr = data.as_ptr().add(idx + 2 * num_columns) as *const f32;
-            let x2 = _mm256_loadu_ps(x2_ptr);
+            let z4_ptr = src.as_ptr().add(i + seventh_samples * 4) as *const f32;
+            let z4 = _mm256_loadu_ps(z4_ptr);
 
-            let x3_ptr = data.as_ptr().add(idx + 3 * num_columns) as *const f32;
-            let x3 = _mm256_loadu_ps(x3_ptr);
+            let z5_ptr = src.as_ptr().add(i + seventh_samples * 5) as *const f32;
+            let z5 = _mm256_loadu_ps(z5_ptr);
 
-            let x4_ptr = data.as_ptr().add(idx + 4 * num_columns) as *const f32;
-            let x4 = _mm256_loadu_ps(x4_ptr);
+            let z6_ptr = src.as_ptr().add(i + seventh_samples * 6) as *const f32;
+            let z6 = _mm256_loadu_ps(z6_ptr);
 
-            let x5_ptr = data.as_ptr().add(idx + 5 * num_columns) as *const f32;
-            let x5 = _mm256_loadu_ps(x5_ptr);
-
-            let x6_ptr = data.as_ptr().add(idx + 6 * num_columns) as *const f32;
-            let x6 = _mm256_loadu_ps(x6_ptr);
-
-            // Load 24 twiddle factors for 4 columns.
-            let tw_ptr = stage_twiddles.as_ptr().add(idx * 6) as *const f32;
+            // Load 24 twiddles contiguously.
+            let tw_ptr = stage_twiddles.as_ptr().add(i * 6) as *const f32;
             let tw_0 = _mm256_loadu_ps(tw_ptr);
             let tw_1 = _mm256_loadu_ps(tw_ptr.add(8));
             let tw_2 = _mm256_loadu_ps(tw_ptr.add(16));
@@ -280,7 +74,7 @@ pub(super) unsafe fn butterfly_7_avx_fma(
             let tw_4 = _mm256_loadu_ps(tw_ptr.add(32));
             let tw_5 = _mm256_loadu_ps(tw_ptr.add(40));
 
-            // Extract w1, w2, w3, w4, w5, w6 for all 4 columns.
+            // Extract w1, w2, w3, w4, w5, w6 from contiguous loads.
             let temp_0 = _mm256_permute2f128_ps(tw_0, tw_3, 0x20);
             let temp_1 = _mm256_permute2f128_ps(tw_1, tw_4, 0x20);
             let temp_2 = _mm256_permute2f128_ps(tw_0, tw_3, 0x31);
@@ -295,138 +89,637 @@ pub(super) unsafe fn butterfly_7_avx_fma(
             let w5 = _mm256_shuffle_ps(temp_1, temp_5, 0b01_00_01_00);
             let w6 = _mm256_shuffle_ps(temp_1, temp_5, 0b11_10_11_10);
 
-            // Helper macro for complex multiply using FMA.
-            macro_rules! cmul_fma {
-                ($x:expr, $w:expr) => {{
-                    let w_re = _mm256_shuffle_ps($w, $w, 0b10_10_00_00);
-                    let w_im = _mm256_shuffle_ps($w, $w, 0b11_11_01_01);
-                    let x_swap = _mm256_shuffle_ps($x, $x, 0b10_11_00_01);
-                    let prod_im = _mm256_mul_ps(w_im, x_swap);
-                    _mm256_fmaddsub_ps(w_re, $x, prod_im)
-                }};
-            }
+            // Preload all trigonometric constants.
+            let cos_2pi_7 = _mm256_set1_ps(COS_2PI_7);
+            let sin_2pi_7 = _mm256_set1_ps(SIN_2PI_7);
+            let cos_4pi_7 = _mm256_set1_ps(COS_4PI_7);
+            let sin_4pi_7 = _mm256_set1_ps(SIN_4PI_7);
+            let cos_6pi_7 = _mm256_set1_ps(COS_6PI_7);
+            let sin_6pi_7 = _mm256_set1_ps(SIN_6PI_7);
+            let neg_sin_2pi_7 = _mm256_set1_ps(-SIN_2PI_7);
+            let neg_sin_4pi_7 = _mm256_set1_ps(-SIN_4PI_7);
+            let neg_sin_6pi_7 = _mm256_set1_ps(-SIN_6PI_7);
 
-            // Complex multiply: t1 = x1 * w1, t2 = x2 * w2, etc.
-            let t1 = cmul_fma!(x1, w1);
-            let t2 = cmul_fma!(x2, w2);
-            let t3 = cmul_fma!(x3, w3);
-            let t4 = cmul_fma!(x4, w4);
-            let t5 = cmul_fma!(x5, w5);
-            let t6 = cmul_fma!(x6, w6);
+            // Complex multiply all twiddles.
+            let t1 = cmul_avx!(w1, z1);
+            let t2 = cmul_avx!(w2, z2);
+            let t3 = cmul_avx!(w3, z3);
+            let t4 = cmul_avx!(w4, z4);
+            let t5 = cmul_avx!(w5, z5);
+            let t6 = cmul_avx!(w6, z6);
 
-            // Y0 = x0 + t1 + t2 + t3 + t4 + t5 + t6
-            let y0 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1), _mm256_add_ps(t2, t3)),
-                _mm256_add_ps(_mm256_add_ps(t4, t5), t6),
+            // DC component.
+            let sum_12 = _mm256_add_ps(t1, t2);
+            let sum_34 = _mm256_add_ps(t3, t4);
+            let sum_56 = _mm256_add_ps(t5, t6);
+            let sum_1234 = _mm256_add_ps(sum_12, sum_34);
+            let sum_all = _mm256_add_ps(sum_1234, sum_56);
+
+            // Radix-7 DFT decomposition.
+            let a1 = _mm256_add_ps(t1, t6);
+            let a2 = _mm256_add_ps(t2, t5);
+            let a3 = _mm256_add_ps(t3, t4);
+
+            let t1_sub_t6 = _mm256_sub_ps(t1, t6);
+            let t2_sub_t5 = _mm256_sub_ps(t2, t5);
+            let t3_sub_t4 = _mm256_sub_ps(t3, t4);
+
+            let sign_mask = _mm256_set_ps(-0.0, 0.0, -0.0, 0.0, -0.0, 0.0, -0.0, 0.0);
+            let b1_swapped = _mm256_shuffle_ps(t1_sub_t6, t1_sub_t6, 0b10_11_00_01);
+            let b1 = _mm256_xor_ps(b1_swapped, sign_mask);
+            let b2_swapped = _mm256_shuffle_ps(t2_sub_t5, t2_sub_t5, 0b10_11_00_01);
+            let b2 = _mm256_xor_ps(b2_swapped, sign_mask);
+            let b3_swapped = _mm256_shuffle_ps(t3_sub_t4, t3_sub_t4, 0b10_11_00_01);
+            let b3 = _mm256_xor_ps(b3_swapped, sign_mask);
+
+            let out0 = _mm256_add_ps(z0, sum_all);
+
+            let out1 = compute_output_avx!(
+                z0, cos_2pi_7, sin_2pi_7, cos_4pi_7, sin_4pi_7, cos_6pi_7, sin_6pi_7, a1, a2, a3,
+                b1, b2, b3
+            );
+            let out2 = compute_output_avx!(
+                z0,
+                cos_4pi_7,
+                sin_4pi_7,
+                cos_6pi_7,
+                neg_sin_6pi_7,
+                cos_2pi_7,
+                neg_sin_2pi_7,
+                a1,
+                a2,
+                a3,
+                b1,
+                b2,
+                b3
+            );
+            let out3 = compute_output_avx!(
+                z0,
+                cos_6pi_7,
+                sin_6pi_7,
+                cos_2pi_7,
+                neg_sin_2pi_7,
+                cos_4pi_7,
+                sin_4pi_7,
+                a1,
+                a2,
+                a3,
+                b1,
+                b2,
+                b3
+            );
+            let out4 = compute_output_avx!(
+                z0,
+                cos_6pi_7,
+                neg_sin_6pi_7,
+                cos_2pi_7,
+                sin_2pi_7,
+                cos_4pi_7,
+                neg_sin_4pi_7,
+                a1,
+                a2,
+                a3,
+                b1,
+                b2,
+                b3
+            );
+            let out5 = compute_output_avx!(
+                z0,
+                cos_4pi_7,
+                neg_sin_4pi_7,
+                cos_6pi_7,
+                sin_6pi_7,
+                cos_2pi_7,
+                sin_2pi_7,
+                a1,
+                a2,
+                a3,
+                b1,
+                b2,
+                b3
+            );
+            let out6 = compute_output_avx!(
+                z0,
+                cos_2pi_7,
+                neg_sin_2pi_7,
+                cos_4pi_7,
+                neg_sin_4pi_7,
+                cos_6pi_7,
+                neg_sin_6pi_7,
+                a1,
+                a2,
+                a3,
+                b1,
+                b2,
+                b3
             );
 
-            // Helper macro for complex multiply by W7 constant using FMA.
-            macro_rules! cmul_w7 {
-                ($t:expr, $w_re:expr, $w_im:expr) => {{
-                    let t_re = _mm256_shuffle_ps($t, $t, 0b10_10_00_00);
-                    let t_im = _mm256_shuffle_ps($t, $t, 0b11_11_01_01);
-                    let re = _mm256_fmsub_ps(t_re, $w_re, _mm256_mul_ps(t_im, $w_im));
-                    let im = _mm256_fmadd_ps(t_re, $w_im, _mm256_mul_ps(t_im, $w_re));
-                    let lo = _mm256_unpacklo_ps(re, im);
-                    let hi = _mm256_unpackhi_ps(re, im);
-                    _mm256_shuffle_ps(lo, hi, 0b01_00_01_00)
-                }};
-            }
+            // Interleave for sequential stores: [out0[0], out1[0], out2[0], out3[0], out4[0], out5[0], out6[0], ...]
+            let out0_pd = _mm256_castps_pd(out0);
+            let out1_pd = _mm256_castps_pd(out1);
+            let out2_pd = _mm256_castps_pd(out2);
+            let out3_pd = _mm256_castps_pd(out3);
+            let out4_pd = _mm256_castps_pd(out4);
+            let out5_pd = _mm256_castps_pd(out5);
+            let out6_pd = _mm256_castps_pd(out6);
 
-            // Y1 = x0 + t1*W_7^1 + t2*W_7^2 + t3*W_7^3 + t4*W_7^4 + t5*W_7^5 + t6*W_7^6
-            let t1_w71 = cmul_w7!(t1, w7_1_re, w7_1_im);
-            let t2_w72 = cmul_w7!(t2, w7_2_re, w7_2_im);
-            let t3_w73 = cmul_w7!(t3, w7_3_re, w7_3_im);
-            let t4_w74 = cmul_w7!(t4, w7_4_re, w7_4_im);
-            let t5_w75 = cmul_w7!(t5, w7_5_re, w7_5_im);
-            let t6_w76 = cmul_w7!(t6, w7_6_re, w7_6_im);
+            // Extract 128-bit lanes (each containing 2 complex numbers).
+            let out0_lo = _mm256_castpd256_pd128(out0_pd);
+            let out0_hi = _mm256_extractf128_pd(out0_pd, 1);
+            let out1_lo = _mm256_castpd256_pd128(out1_pd);
+            let out1_hi = _mm256_extractf128_pd(out1_pd, 1);
+            let out2_lo = _mm256_castpd256_pd128(out2_pd);
+            let out2_hi = _mm256_extractf128_pd(out2_pd, 1);
+            let out3_lo = _mm256_castpd256_pd128(out3_pd);
+            let out3_hi = _mm256_extractf128_pd(out3_pd, 1);
+            let out4_lo = _mm256_castpd256_pd128(out4_pd);
+            let out4_hi = _mm256_extractf128_pd(out4_pd, 1);
+            let out5_lo = _mm256_castpd256_pd128(out5_pd);
+            let out5_hi = _mm256_extractf128_pd(out5_pd, 1);
+            let out6_lo = _mm256_castpd256_pd128(out6_pd);
+            let out6_hi = _mm256_extractf128_pd(out6_pd, 1);
 
-            let y1 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w71), _mm256_add_ps(t2_w72, t3_w73)),
-                _mm256_add_ps(_mm256_add_ps(t4_w74, t5_w75), t6_w76),
-            );
+            // Build result0: [out0[0], out1[0], out2[0], out3[0]]
+            let temp0_lo = _mm_unpacklo_pd(out0_lo, out1_lo); // [out0[0], out1[0]]
+            let temp0_hi = _mm_unpacklo_pd(out2_lo, out3_lo); // [out2[0], out3[0]]
+            let result0 = _mm256_castpd_ps(_mm256_set_m128d(temp0_hi, temp0_lo));
 
-            // Y2 = x0 + t1*W_7^2 + t2*W_7^4 + t3*W_7^6 + t4*W_7^1 + t5*W_7^3 + t6*W_7^5
-            let t1_w72 = cmul_w7!(t1, w7_2_re, w7_2_im);
-            let t2_w74 = cmul_w7!(t2, w7_4_re, w7_4_im);
-            let t3_w76 = cmul_w7!(t3, w7_6_re, w7_6_im);
-            let t4_w71 = cmul_w7!(t4, w7_1_re, w7_1_im);
-            let t5_w73 = cmul_w7!(t5, w7_3_re, w7_3_im);
-            let t6_w75 = cmul_w7!(t6, w7_5_re, w7_5_im);
+            // Build result1: [out4[0], out5[0], out6[0], out0[1]]
+            let temp1_lo = _mm_unpacklo_pd(out4_lo, out5_lo); // [out4[0], out5[0]]
+            let temp1_hi = _mm_shuffle_pd::<2>(out6_lo, out0_lo); // [out6[0], out0[1]]
+            let result1 = _mm256_castpd_ps(_mm256_set_m128d(temp1_hi, temp1_lo));
 
-            let y2 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w72), _mm256_add_ps(t2_w74, t3_w76)),
-                _mm256_add_ps(_mm256_add_ps(t4_w71, t5_w73), t6_w75),
-            );
+            // Build result2: [out1[1], out2[1], out3[1], out4[1]]
+            let temp2_lo = _mm_unpackhi_pd(out1_lo, out2_lo); // [out1[1], out2[1]]
+            let temp2_hi = _mm_unpackhi_pd(out3_lo, out4_lo); // [out3[1], out4[1]]
+            let result2 = _mm256_castpd_ps(_mm256_set_m128d(temp2_hi, temp2_lo));
 
-            // Y3 = x0 + t1*W_7^3 + t2*W_7^6 + t3*W_7^2 + t4*W_7^5 + t5*W_7^1 + t6*W_7^4
-            let t1_w73 = cmul_w7!(t1, w7_3_re, w7_3_im);
-            let t2_w76 = cmul_w7!(t2, w7_6_re, w7_6_im);
-            let t3_w72 = cmul_w7!(t3, w7_2_re, w7_2_im);
-            let t4_w75 = cmul_w7!(t4, w7_5_re, w7_5_im);
-            let t5_w71 = cmul_w7!(t5, w7_1_re, w7_1_im);
-            let t6_w74 = cmul_w7!(t6, w7_4_re, w7_4_im);
+            // Build result3: [out5[1], out6[1], out0[2], out1[2]]
+            let temp3_lo = _mm_unpackhi_pd(out5_lo, out6_lo); // [out5[1], out6[1]]
+            let temp3_hi = _mm_unpacklo_pd(out0_hi, out1_hi); // [out0[2], out1[2]]
+            let result3 = _mm256_castpd_ps(_mm256_set_m128d(temp3_hi, temp3_lo));
 
-            let y3 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w73), _mm256_add_ps(t2_w76, t3_w72)),
-                _mm256_add_ps(_mm256_add_ps(t4_w75, t5_w71), t6_w74),
-            );
+            // Build result4: [out2[2], out3[2], out4[2], out5[2]]
+            let temp4_lo = _mm_unpacklo_pd(out2_hi, out3_hi); // [out2[2], out3[2]]
+            let temp4_hi = _mm_unpacklo_pd(out4_hi, out5_hi); // [out4[2], out5[2]]
+            let result4 = _mm256_castpd_ps(_mm256_set_m128d(temp4_hi, temp4_lo));
 
-            // Y4 = x0 + t1*W_7^4 + t2*W_7^1 + t3*W_7^5 + t4*W_7^2 + t5*W_7^6 + t6*W_7^3
-            let t1_w74 = cmul_w7!(t1, w7_4_re, w7_4_im);
-            let t2_w71 = cmul_w7!(t2, w7_1_re, w7_1_im);
-            let t3_w75 = cmul_w7!(t3, w7_5_re, w7_5_im);
-            let t4_w72 = cmul_w7!(t4, w7_2_re, w7_2_im);
-            let t5_w76 = cmul_w7!(t5, w7_6_re, w7_6_im);
-            let t6_w73 = cmul_w7!(t6, w7_3_re, w7_3_im);
+            // Build result5: [out6[2], out0[3], out1[3], out2[3]]
+            let temp5_lo = _mm_shuffle_pd::<2>(out6_hi, out0_hi); // [out6[2], out0[3]]
+            let temp5_hi = _mm_unpackhi_pd(out1_hi, out2_hi); // [out1[3], out2[3]]
+            let result5 = _mm256_castpd_ps(_mm256_set_m128d(temp5_hi, temp5_lo));
 
-            let y4 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w74), _mm256_add_ps(t2_w71, t3_w75)),
-                _mm256_add_ps(_mm256_add_ps(t4_w72, t5_w76), t6_w73),
-            );
+            // Build result6: [out3[3], out4[3], out5[3], out6[3]]
+            let temp6_lo = _mm_unpackhi_pd(out3_hi, out4_hi); // [out3[3], out4[3]]
+            let temp6_hi = _mm_unpackhi_pd(out5_hi, out6_hi); // [out5[3], out6[3]]
+            let result6 = _mm256_castpd_ps(_mm256_set_m128d(temp6_hi, temp6_lo));
 
-            // Y5 = x0 + t1*W_7^5 + t2*W_7^3 + t3*W_7^1 + t4*W_7^6 + t5*W_7^4 + t6*W_7^2
-            let t1_w75 = cmul_w7!(t1, w7_5_re, w7_5_im);
-            let t2_w73 = cmul_w7!(t2, w7_3_re, w7_3_im);
-            let t3_w71 = cmul_w7!(t3, w7_1_re, w7_1_im);
-            let t4_w76 = cmul_w7!(t4, w7_6_re, w7_6_im);
-            let t5_w74 = cmul_w7!(t5, w7_4_re, w7_4_im);
-            let t6_w72 = cmul_w7!(t6, w7_2_re, w7_2_im);
-
-            let y5 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w75), _mm256_add_ps(t2_w73, t3_w71)),
-                _mm256_add_ps(_mm256_add_ps(t4_w76, t5_w74), t6_w72),
-            );
-
-            // Y6 = x0 + t1*W_7^6 + t2*W_7^5 + t3*W_7^4 + t4*W_7^3 + t5*W_7^2 + t6*W_7^1
-            let t1_w76 = cmul_w7!(t1, w7_6_re, w7_6_im);
-            let t2_w75 = cmul_w7!(t2, w7_5_re, w7_5_im);
-            let t3_w74 = cmul_w7!(t3, w7_4_re, w7_4_im);
-            let t4_w73 = cmul_w7!(t4, w7_3_re, w7_3_im);
-            let t5_w72 = cmul_w7!(t5, w7_2_re, w7_2_im);
-            let t6_w71 = cmul_w7!(t6, w7_1_re, w7_1_im);
-
-            let y6 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(x0, t1_w76), _mm256_add_ps(t2_w75, t3_w74)),
-                _mm256_add_ps(_mm256_add_ps(t4_w73, t5_w72), t6_w71),
-            );
-
-            let y0_ptr = data.as_mut_ptr().add(idx) as *mut f32;
-            _mm256_storeu_ps(y0_ptr, y0);
-            let y1_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
-            _mm256_storeu_ps(y1_ptr, y1);
-            let y2_ptr = data.as_mut_ptr().add(idx + 2 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y2_ptr, y2);
-            let y3_ptr = data.as_mut_ptr().add(idx + 3 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y3_ptr, y3);
-            let y4_ptr = data.as_mut_ptr().add(idx + 4 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y4_ptr, y4);
-            let y5_ptr = data.as_mut_ptr().add(idx + 5 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y5_ptr, y5);
-            let y6_ptr = data.as_mut_ptr().add(idx + 6 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y6_ptr, y6);
+            // Sequential stores.
+            let j = 7 * i;
+            let dst_ptr = dst.as_mut_ptr().add(j) as *mut f32;
+            _mm256_storeu_ps(dst_ptr, result0);
+            _mm256_storeu_ps(dst_ptr.add(8), result1);
+            _mm256_storeu_ps(dst_ptr.add(16), result2);
+            _mm256_storeu_ps(dst_ptr.add(24), result3);
+            _mm256_storeu_ps(dst_ptr.add(32), result4);
+            _mm256_storeu_ps(dst_ptr.add(40), result5);
+            _mm256_storeu_ps(dst_ptr.add(48), result6);
         }
+    }
 
-        super::butterfly_7_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
+    for i in simd_iters..seventh_samples {
+        let w1 = stage_twiddles[i * 6];
+        let w2 = stage_twiddles[i * 6 + 1];
+        let w3 = stage_twiddles[i * 6 + 2];
+        let w4 = stage_twiddles[i * 6 + 3];
+        let w5 = stage_twiddles[i * 6 + 4];
+        let w6 = stage_twiddles[i * 6 + 5];
+
+        let z0 = src[i];
+        let z1 = src[i + seventh_samples];
+        let z2 = src[i + seventh_samples * 2];
+        let z3 = src[i + seventh_samples * 3];
+        let z4 = src[i + seventh_samples * 4];
+        let z5 = src[i + seventh_samples * 5];
+        let z6 = src[i + seventh_samples * 6];
+
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+        let t3 = w3.mul(&z3);
+        let t4 = w4.mul(&z4);
+        let t5 = w5.mul(&z5);
+        let t6 = w6.mul(&z6);
+
+        let sum_all = t1.add(&t2).add(&t3).add(&t4).add(&t5).add(&t6);
+
+        let a1 = t1.add(&t6);
+        let a2 = t2.add(&t5);
+        let a3 = t3.add(&t4);
+
+        let b1_re = t1.im - t6.im;
+        let b1_im = t6.re - t1.re;
+        let b2_re = t2.im - t5.im;
+        let b2_im = t5.re - t2.re;
+        let b3_re = t3.im - t4.im;
+        let b3_im = t4.re - t3.re;
+
+        let j = 7 * i;
+        dst[j] = z0.add(&sum_all);
+
+        for idx in 1..7 {
+            let (cos1, sin1, cos2, sin2, cos3, sin3) = match idx {
+                1 => (
+                    COS_2PI_7, SIN_2PI_7, COS_4PI_7, SIN_4PI_7, COS_6PI_7, SIN_6PI_7,
+                ),
+                2 => (
+                    COS_4PI_7, SIN_4PI_7, COS_6PI_7, -SIN_6PI_7, COS_2PI_7, -SIN_2PI_7,
+                ),
+                3 => (
+                    COS_6PI_7, SIN_6PI_7, COS_2PI_7, -SIN_2PI_7, COS_4PI_7, SIN_4PI_7,
+                ),
+                4 => (
+                    COS_6PI_7, -SIN_6PI_7, COS_2PI_7, SIN_2PI_7, COS_4PI_7, -SIN_4PI_7,
+                ),
+                5 => (
+                    COS_4PI_7, -SIN_4PI_7, COS_6PI_7, SIN_6PI_7, COS_2PI_7, SIN_2PI_7,
+                ),
+                6 => (
+                    COS_2PI_7, -SIN_2PI_7, COS_4PI_7, -SIN_4PI_7, COS_6PI_7, -SIN_6PI_7,
+                ),
+                _ => unreachable!(),
+            };
+
+            let c_re = z0.re + cos1 * a1.re + cos2 * a2.re + cos3 * a3.re;
+            let c_im = z0.im + cos1 * a1.im + cos2 * a2.im + cos3 * a3.im;
+            let d_re = sin1 * b1_re + sin2 * b2_re + sin3 * b3_re;
+            let d_im = sin1 * b1_im + sin2 * b2_im + sin3 * b3_im;
+
+            dst[j + idx] = Complex32::new(c_re + d_re, c_im + d_im);
+        }
+    }
+}
+
+/// Performs a single radix-7 Stockham butterfly stage (out-of-place, AVX+FMA) for generic p.
+#[target_feature(enable = "avx,fma")]
+pub(super) unsafe fn butterfly_radix7_generic_avx_fma(
+    src: &[Complex32],
+    dst: &mut [Complex32],
+    stage_twiddles: &[Complex32],
+    stride: usize,
+) {
+    use core::arch::x86_64::*;
+
+    let samples = src.len();
+    let seventh_samples = samples / 7;
+    let simd_iters = (seventh_samples / 4) * 4;
+
+    // Macro for complex multiplication: result = w * z
+    macro_rules! cmul_avx {
+        ($w:expr, $z:expr) => {{
+            let z_re = _mm256_moveldup_ps($z);
+            let z_im = _mm256_movehdup_ps($z);
+            let w_swap = _mm256_permute_ps($w, 0b10_11_00_01);
+            let prod_im = _mm256_mul_ps(w_swap, z_im);
+            _mm256_fmaddsub_ps($w, z_re, prod_im)
+        }};
+    }
+
+    // Macro for computing radix-7 outputs using pure SIMD FMA chains.
+    // out = (z0 + cos1*a1 + cos2*a2 + cos3*a3) + (sin1*b1 + sin2*b2 + sin3*b3)
+    macro_rules! compute_output_avx {
+        ($z0:expr, $cos1:expr, $sin1:expr, $cos2:expr, $sin2:expr, $cos3:expr, $sin3:expr, $a1:expr, $a2:expr, $a3:expr, $b1:expr, $b2:expr, $b3:expr) => {{
+            let c = _mm256_fmadd_ps(
+                $cos3,
+                $a3,
+                _mm256_fmadd_ps($cos2, $a2, _mm256_fmadd_ps($cos1, $a1, $z0)),
+            );
+            let d = _mm256_fmadd_ps(
+                $sin3,
+                $b3,
+                _mm256_fmadd_ps($sin2, $b2, _mm256_mul_ps($sin1, $b1)),
+            );
+            _mm256_add_ps(c, d)
+        }};
+    }
+
+    unsafe {
+        for i in (0..simd_iters).step_by(4) {
+            let k0 = i % stride;
+            let k1 = (i + 1) % stride;
+            let k2 = (i + 2) % stride;
+            let k3 = (i + 3) % stride;
+
+            // Load z0.
+            let z0_ptr = src.as_ptr().add(i) as *const f32;
+            let z0 = _mm256_loadu_ps(z0_ptr);
+
+            let z1_ptr = src.as_ptr().add(i + seventh_samples) as *const f32;
+            let z1 = _mm256_loadu_ps(z1_ptr);
+
+            let z2_ptr = src.as_ptr().add(i + seventh_samples * 2) as *const f32;
+            let z2 = _mm256_loadu_ps(z2_ptr);
+
+            let z3_ptr = src.as_ptr().add(i + seventh_samples * 3) as *const f32;
+            let z3 = _mm256_loadu_ps(z3_ptr);
+
+            let z4_ptr = src.as_ptr().add(i + seventh_samples * 4) as *const f32;
+            let z4 = _mm256_loadu_ps(z4_ptr);
+
+            let z5_ptr = src.as_ptr().add(i + seventh_samples * 5) as *const f32;
+            let z5 = _mm256_loadu_ps(z5_ptr);
+
+            let z6_ptr = src.as_ptr().add(i + seventh_samples * 6) as *const f32;
+            let z6 = _mm256_loadu_ps(z6_ptr);
+
+            // Load 24 twiddles contiguously.
+            let tw_ptr = stage_twiddles.as_ptr().add(i * 6) as *const f32;
+            let tw_0 = _mm256_loadu_ps(tw_ptr);
+            let tw_1 = _mm256_loadu_ps(tw_ptr.add(8));
+            let tw_2 = _mm256_loadu_ps(tw_ptr.add(16));
+            let tw_3 = _mm256_loadu_ps(tw_ptr.add(24));
+            let tw_4 = _mm256_loadu_ps(tw_ptr.add(32));
+            let tw_5 = _mm256_loadu_ps(tw_ptr.add(40));
+
+            // Extract w1, w2, w3, w4, w5, w6 from contiguous loads.
+            let temp_0 = _mm256_permute2f128_ps(tw_0, tw_3, 0x20);
+            let temp_1 = _mm256_permute2f128_ps(tw_1, tw_4, 0x20);
+            let temp_2 = _mm256_permute2f128_ps(tw_0, tw_3, 0x31);
+            let temp_3 = _mm256_permute2f128_ps(tw_1, tw_4, 0x31);
+            let temp_4 = _mm256_permute2f128_ps(tw_2, tw_5, 0x20);
+            let temp_5 = _mm256_permute2f128_ps(tw_2, tw_5, 0x31);
+
+            let w1 = _mm256_shuffle_ps(temp_0, temp_3, 0b01_00_01_00);
+            let w2 = _mm256_shuffle_ps(temp_0, temp_3, 0b11_10_11_10);
+            let w3 = _mm256_shuffle_ps(temp_2, temp_4, 0b01_00_01_00);
+            let w4 = _mm256_shuffle_ps(temp_2, temp_4, 0b11_10_11_10);
+            let w5 = _mm256_shuffle_ps(temp_1, temp_5, 0b01_00_01_00);
+            let w6 = _mm256_shuffle_ps(temp_1, temp_5, 0b11_10_11_10);
+
+            // Preload all trigonometric constants early to mask memory latency.
+            let cos_2pi_7 = _mm256_set1_ps(COS_2PI_7);
+            let sin_2pi_7 = _mm256_set1_ps(SIN_2PI_7);
+            let cos_4pi_7 = _mm256_set1_ps(COS_4PI_7);
+            let sin_4pi_7 = _mm256_set1_ps(SIN_4PI_7);
+            let cos_6pi_7 = _mm256_set1_ps(COS_6PI_7);
+            let sin_6pi_7 = _mm256_set1_ps(SIN_6PI_7);
+            let neg_sin_2pi_7 = _mm256_set1_ps(-SIN_2PI_7);
+            let neg_sin_4pi_7 = _mm256_set1_ps(-SIN_4PI_7);
+            let neg_sin_6pi_7 = _mm256_set1_ps(-SIN_6PI_7);
+
+            // Complex multiply all twiddles using macro.
+            let t1 = cmul_avx!(w1, z1);
+            let t2 = cmul_avx!(w2, z2);
+            let t3 = cmul_avx!(w3, z3);
+            let t4 = cmul_avx!(w4, z4);
+            let t5 = cmul_avx!(w5, z5);
+            let t6 = cmul_avx!(w6, z6);
+
+            // DC component - balanced tree for lower latency.
+            let sum_12 = _mm256_add_ps(t1, t2);
+            let sum_34 = _mm256_add_ps(t3, t4);
+            let sum_56 = _mm256_add_ps(t5, t6);
+            let sum_1234 = _mm256_add_ps(sum_12, sum_34);
+            let sum_all = _mm256_add_ps(sum_1234, sum_56);
+
+            // Radix-7 DFT decomposition.
+            let a1 = _mm256_add_ps(t1, t6);
+            let a2 = _mm256_add_ps(t2, t5);
+            let a3 = _mm256_add_ps(t3, t4);
+
+            // b = i * (t1 - t6), etc.
+            let t1_sub_t6 = _mm256_sub_ps(t1, t6);
+            let t2_sub_t5 = _mm256_sub_ps(t2, t5);
+            let t3_sub_t4 = _mm256_sub_ps(t3, t4);
+
+            let sign_mask = _mm256_set_ps(-0.0, 0.0, -0.0, 0.0, -0.0, 0.0, -0.0, 0.0);
+            let b1_swapped = _mm256_shuffle_ps(t1_sub_t6, t1_sub_t6, 0b10_11_00_01);
+            let b1 = _mm256_xor_ps(b1_swapped, sign_mask);
+            let b2_swapped = _mm256_shuffle_ps(t2_sub_t5, t2_sub_t5, 0b10_11_00_01);
+            let b2 = _mm256_xor_ps(b2_swapped, sign_mask);
+            let b3_swapped = _mm256_shuffle_ps(t3_sub_t4, t3_sub_t4, 0b10_11_00_01);
+            let b3 = _mm256_xor_ps(b3_swapped, sign_mask);
+
+            // Output indices.
+            let j0 = 7 * i - 6 * k0;
+            let j1 = 7 * (i + 1) - 6 * k1;
+            let j2 = 7 * (i + 2) - 6 * k2;
+            let j3 = 7 * (i + 3) - 6 * k3;
+
+            let out0 = _mm256_add_ps(z0, sum_all);
+
+            let out1 = compute_output_avx!(
+                z0, cos_2pi_7, sin_2pi_7, cos_4pi_7, sin_4pi_7, cos_6pi_7, sin_6pi_7, a1, a2, a3,
+                b1, b2, b3
+            );
+            let out2 = compute_output_avx!(
+                z0,
+                cos_4pi_7,
+                sin_4pi_7,
+                cos_6pi_7,
+                neg_sin_6pi_7,
+                cos_2pi_7,
+                neg_sin_2pi_7,
+                a1,
+                a2,
+                a3,
+                b1,
+                b2,
+                b3
+            );
+            let out3 = compute_output_avx!(
+                z0,
+                cos_6pi_7,
+                sin_6pi_7,
+                cos_2pi_7,
+                neg_sin_2pi_7,
+                cos_4pi_7,
+                sin_4pi_7,
+                a1,
+                a2,
+                a3,
+                b1,
+                b2,
+                b3
+            );
+            let out4 = compute_output_avx!(
+                z0,
+                cos_6pi_7,
+                neg_sin_6pi_7,
+                cos_2pi_7,
+                sin_2pi_7,
+                cos_4pi_7,
+                neg_sin_4pi_7,
+                a1,
+                a2,
+                a3,
+                b1,
+                b2,
+                b3
+            );
+            let out5 = compute_output_avx!(
+                z0,
+                cos_4pi_7,
+                neg_sin_4pi_7,
+                cos_6pi_7,
+                sin_6pi_7,
+                cos_2pi_7,
+                sin_2pi_7,
+                a1,
+                a2,
+                a3,
+                b1,
+                b2,
+                b3
+            );
+            let out6 = compute_output_avx!(
+                z0,
+                cos_2pi_7,
+                neg_sin_2pi_7,
+                cos_4pi_7,
+                neg_sin_4pi_7,
+                cos_6pi_7,
+                neg_sin_6pi_7,
+                a1,
+                a2,
+                a3,
+                b1,
+                b2,
+                b3
+            );
+
+            // Direct SIMD stores.
+            let out0_pd = _mm256_castps_pd(out0);
+            let out1_pd = _mm256_castps_pd(out1);
+            let out2_pd = _mm256_castps_pd(out2);
+            let out3_pd = _mm256_castps_pd(out3);
+            let out4_pd = _mm256_castps_pd(out4);
+            let out5_pd = _mm256_castps_pd(out5);
+            let out6_pd = _mm256_castps_pd(out6);
+
+            let out0_lo = _mm256_castpd256_pd128(out0_pd);
+            let out0_hi = _mm256_extractf128_pd(out0_pd, 1);
+            let out1_lo = _mm256_castpd256_pd128(out1_pd);
+            let out1_hi = _mm256_extractf128_pd(out1_pd, 1);
+            let out2_lo = _mm256_castpd256_pd128(out2_pd);
+            let out2_hi = _mm256_extractf128_pd(out2_pd, 1);
+            let out3_lo = _mm256_castpd256_pd128(out3_pd);
+            let out3_hi = _mm256_extractf128_pd(out3_pd, 1);
+            let out4_lo = _mm256_castpd256_pd128(out4_pd);
+            let out4_hi = _mm256_extractf128_pd(out4_pd, 1);
+            let out5_lo = _mm256_castpd256_pd128(out5_pd);
+            let out5_hi = _mm256_extractf128_pd(out5_pd, 1);
+            let out6_lo = _mm256_castpd256_pd128(out6_pd);
+            let out6_hi = _mm256_extractf128_pd(out6_pd, 1);
+
+            let dst_ptr = dst.as_mut_ptr() as *mut f64;
+
+            // Store iteration 0.
+            _mm_storel_pd(dst_ptr.add(j0), out0_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride), out1_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 2), out2_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 3), out3_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 4), out4_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 5), out5_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 6), out6_lo);
+
+            // Store iteration 1.
+            _mm_storeh_pd(dst_ptr.add(j1), out0_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride), out1_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 2), out2_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 3), out3_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 4), out4_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 5), out5_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 6), out6_lo);
+
+            // Store iteration 2.
+            _mm_storel_pd(dst_ptr.add(j2), out0_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride), out1_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 2), out2_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 3), out3_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 4), out4_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 5), out5_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 6), out6_hi);
+
+            // Store iteration 3.
+            _mm_storeh_pd(dst_ptr.add(j3), out0_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride), out1_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 2), out2_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 3), out3_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 4), out4_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 5), out5_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 6), out6_hi);
+        }
+    }
+
+    for i in simd_iters..seventh_samples {
+        let k = i % stride;
+        let w1 = stage_twiddles[i * 6];
+        let w2 = stage_twiddles[i * 6 + 1];
+        let w3 = stage_twiddles[i * 6 + 2];
+        let w4 = stage_twiddles[i * 6 + 3];
+        let w5 = stage_twiddles[i * 6 + 4];
+        let w6 = stage_twiddles[i * 6 + 5];
+
+        let z0 = src[i];
+        let z1 = src[i + seventh_samples];
+        let z2 = src[i + seventh_samples * 2];
+        let z3 = src[i + seventh_samples * 3];
+        let z4 = src[i + seventh_samples * 4];
+        let z5 = src[i + seventh_samples * 5];
+        let z6 = src[i + seventh_samples * 6];
+
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+        let t3 = w3.mul(&z3);
+        let t4 = w4.mul(&z4);
+        let t5 = w5.mul(&z5);
+        let t6 = w6.mul(&z6);
+
+        let sum_all = t1.add(&t2).add(&t3).add(&t4).add(&t5).add(&t6);
+
+        let a1 = t1.add(&t6);
+        let a2 = t2.add(&t5);
+        let a3 = t3.add(&t4);
+
+        let b1_re = t1.im - t6.im;
+        let b1_im = t6.re - t1.re;
+        let b2_re = t2.im - t5.im;
+        let b2_im = t5.re - t2.re;
+        let b3_re = t3.im - t4.im;
+        let b3_im = t4.re - t3.re;
+
+        let j = 7 * i - 6 * k;
+        dst[j] = z0.add(&sum_all);
+
+        for idx in 1..7 {
+            let (cos1, sin1, cos2, sin2, cos3, sin3) = match idx {
+                1 => (
+                    COS_2PI_7, SIN_2PI_7, COS_4PI_7, SIN_4PI_7, COS_6PI_7, SIN_6PI_7,
+                ),
+                2 => (
+                    COS_4PI_7, SIN_4PI_7, COS_6PI_7, -SIN_6PI_7, COS_2PI_7, -SIN_2PI_7,
+                ),
+                3 => (
+                    COS_6PI_7, SIN_6PI_7, COS_2PI_7, -SIN_2PI_7, COS_4PI_7, SIN_4PI_7,
+                ),
+                4 => (
+                    COS_6PI_7, -SIN_6PI_7, COS_2PI_7, SIN_2PI_7, COS_4PI_7, -SIN_4PI_7,
+                ),
+                5 => (
+                    COS_4PI_7, -SIN_4PI_7, COS_6PI_7, SIN_6PI_7, COS_2PI_7, SIN_2PI_7,
+                ),
+                6 => (
+                    COS_2PI_7, -SIN_2PI_7, COS_4PI_7, -SIN_4PI_7, COS_6PI_7, -SIN_6PI_7,
+                ),
+                _ => unreachable!(),
+            };
+
+            let c_re = z0.re + cos1 * a1.re + cos2 * a2.re + cos3 * a3.re;
+            let c_im = z0.im + cos1 * a1.im + cos2 * a2.im + cos3 * a3.im;
+            let d_re = sin1 * b1_re + sin2 * b2_re + sin3 * b3_re;
+            let d_im = sin1 * b1_im + sin2 * b2_im + sin3 * b3_im;
+
+            dst[j + stride * idx] = Complex32::new(c_re + d_re, c_im + d_im);
+        }
     }
 }

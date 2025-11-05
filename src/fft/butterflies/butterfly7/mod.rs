@@ -1,457 +1,322 @@
-use crate::Complex32;
+use crate::fft::Complex32;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    any(
+        not(feature = "no_std"),
+        all(target_feature = "avx", target_feature = "fma")
+    )
+))]
 mod avx;
-#[cfg(target_arch = "aarch64")]
+
+#[cfg(all(
+    target_arch = "x86_64",
+    any(
+        test,
+        not(feature = "no_std"),
+        all(
+            feature = "no_std",
+            target_feature = "sse2",
+            not(target_feature = "sse4.2"),
+            not(all(target_feature = "avx", target_feature = "fma"))
+        )
+    ),
+))]
+mod sse2;
+
+#[cfg(all(
+    target_arch = "x86_64",
+    any(
+        all(test, target_feature = "sse4.2"),
+        not(feature = "no_std"),
+        all(
+            feature = "no_std",
+            target_feature = "sse4.2",
+            not(all(target_feature = "avx", target_feature = "fma"))
+        )
+    ),
+))]
+mod sse4_2;
+
+#[cfg(all(
+    target_arch = "aarch64",
+    any(not(feature = "no_std"), target_feature = "neon")
+))]
 mod neon;
-#[cfg(target_arch = "x86_64")]
-mod sse;
 
-// Primitive 7th roots of unity: W_7 = exp(-2πi/7)
-pub(super) const W7_1_RE: f32 = 0.6234898; // cos(-2π/7)
-pub(super) const W7_1_IM: f32 = -0.7818315; // sin(-2π/7)
-pub(super) const W7_2_RE: f32 = -0.2225209; // cos(-4π/7)
-pub(super) const W7_2_IM: f32 = -0.9749279; // sin(-4π/7)
-pub(super) const W7_3_RE: f32 = -0.9009689; // cos(-6π/7)
-pub(super) const W7_3_IM: f32 = -0.4338837; // sin(-6π/7)
-pub(super) const W7_4_RE: f32 = -0.9009689; // cos(-8π/7)
-pub(super) const W7_4_IM: f32 = 0.4338837; // sin(-8π/7)
-pub(super) const W7_5_RE: f32 = -0.2225209; // cos(-10π/7)
-pub(super) const W7_5_IM: f32 = 0.9749279; // sin(-10π/7)
-pub(super) const W7_6_RE: f32 = 0.6234898; // cos(-12π/7)
-pub(super) const W7_6_IM: f32 = 0.7818315; // sin(-12π/7)
+const COS_2PI_7: f32 = 0.6234898;
+const SIN_2PI_7: f32 = 0.7818315;
+const COS_4PI_7: f32 = -0.22252093;
+const SIN_4PI_7: f32 = 0.9749279;
+const COS_6PI_7: f32 = -0.90096885;
+const SIN_6PI_7: f32 = 0.43388373;
 
-/// Processes a single radix-7 butterfly stage across all columns using scalar operations.
-///
-/// Implements the radix-7 DFT butterfly:
-/// X[k] = sum_{j=0}^{6} x[j] * W_stage[j] * W_7^(k*j)
-///
-/// Where W_7 = exp(-2πi/7) is the primitive 7th root of unity, and
-/// W_stage are the stage-specific twiddle factors.
+/// Dispatch function for radix-7 Stockham butterfly.
 #[inline(always)]
-pub(super) fn butterfly_7_scalar(
-    data: &mut [Complex32],
+pub(crate) fn butterfly_radix7_dispatch(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
+    stride: usize,
 ) {
-    for idx in start_col..num_columns {
-        let x0 = data[idx];
-        let x1 = data[idx + num_columns];
-        let x2 = data[idx + 2 * num_columns];
-        let x3 = data[idx + 3 * num_columns];
-        let x4 = data[idx + 4 * num_columns];
-        let x5 = data[idx + 5 * num_columns];
-        let x6 = data[idx + 6 * num_columns];
+    #[allow(unused)]
+    let samples = src.len();
+    #[allow(unused)]
+    let seventh_samples = samples / 7;
 
-        // Apply stage twiddle factors.
-        let w1 = stage_twiddles[idx * 6];
-        let w2 = stage_twiddles[idx * 6 + 1];
-        let w3 = stage_twiddles[idx * 6 + 2];
-        let w4 = stage_twiddles[idx * 6 + 3];
-        let w5 = stage_twiddles[idx * 6 + 4];
-        let w6 = stage_twiddles[idx * 6 + 5];
-
-        let t1 = x1.mul(&w1);
-        let t2 = x2.mul(&w2);
-        let t3 = x3.mul(&w3);
-        let t4 = x4.mul(&w4);
-        let t5 = x5.mul(&w5);
-        let t6 = x6.mul(&w6);
-
-        // X0 = x0 + t1 + t2 + t3 + t4 + t5 + t6
-        data[idx] = x0.add(&t1).add(&t2).add(&t3).add(&t4).add(&t5).add(&t6);
-
-        // X1 = x0 + t1*W_7^1 + t2*W_7^2 + t3*W_7^3 + t4*W_7^4 + t5*W_7^5 + t6*W_7^6
-        let t1_w71 = Complex32::new(
-            t1.re * W7_1_RE - t1.im * W7_1_IM,
-            t1.re * W7_1_IM + t1.im * W7_1_RE,
-        );
-        let t2_w72 = Complex32::new(
-            t2.re * W7_2_RE - t2.im * W7_2_IM,
-            t2.re * W7_2_IM + t2.im * W7_2_RE,
-        );
-        let t3_w73 = Complex32::new(
-            t3.re * W7_3_RE - t3.im * W7_3_IM,
-            t3.re * W7_3_IM + t3.im * W7_3_RE,
-        );
-        let t4_w74 = Complex32::new(
-            t4.re * W7_4_RE - t4.im * W7_4_IM,
-            t4.re * W7_4_IM + t4.im * W7_4_RE,
-        );
-        let t5_w75 = Complex32::new(
-            t5.re * W7_5_RE - t5.im * W7_5_IM,
-            t5.re * W7_5_IM + t5.im * W7_5_RE,
-        );
-        let t6_w76 = Complex32::new(
-            t6.re * W7_6_RE - t6.im * W7_6_IM,
-            t6.re * W7_6_IM + t6.im * W7_6_RE,
-        );
-        data[idx + num_columns] = x0
-            .add(&t1_w71)
-            .add(&t2_w72)
-            .add(&t3_w73)
-            .add(&t4_w74)
-            .add(&t5_w75)
-            .add(&t6_w76);
-
-        // X2 = x0 + t1*W_7^2 + t2*W_7^4 + t3*W_7^6 + t4*W_7^1 + t5*W_7^3 + t6*W_7^5
-        // (Note: W_7^(2*2) = W_7^4, W_7^(2*3) = W_7^6, W_7^(2*4) = W_7^8 = W_7^1, etc.)
-        let t1_w72 = Complex32::new(
-            t1.re * W7_2_RE - t1.im * W7_2_IM,
-            t1.re * W7_2_IM + t1.im * W7_2_RE,
-        );
-        let t2_w74 = Complex32::new(
-            t2.re * W7_4_RE - t2.im * W7_4_IM,
-            t2.re * W7_4_IM + t2.im * W7_4_RE,
-        );
-        let t3_w76 = Complex32::new(
-            t3.re * W7_6_RE - t3.im * W7_6_IM,
-            t3.re * W7_6_IM + t3.im * W7_6_RE,
-        );
-        let t4_w71 = Complex32::new(
-            t4.re * W7_1_RE - t4.im * W7_1_IM,
-            t4.re * W7_1_IM + t4.im * W7_1_RE,
-        );
-        let t5_w73 = Complex32::new(
-            t5.re * W7_3_RE - t5.im * W7_3_IM,
-            t5.re * W7_3_IM + t5.im * W7_3_RE,
-        );
-        let t6_w75 = Complex32::new(
-            t6.re * W7_5_RE - t6.im * W7_5_IM,
-            t6.re * W7_5_IM + t6.im * W7_5_RE,
-        );
-        data[idx + 2 * num_columns] = x0
-            .add(&t1_w72)
-            .add(&t2_w74)
-            .add(&t3_w76)
-            .add(&t4_w71)
-            .add(&t5_w73)
-            .add(&t6_w75);
-
-        // X3 = x0 + t1*W_7^3 + t2*W_7^6 + t3*W_7^2 + t4*W_7^5 + t5*W_7^1 + t6*W_7^4
-        // (Note: W_7^(3*2) = W_7^6, W_7^(3*3) = W_7^9 = W_7^2, W_7^(3*4) = W_7^12 = W_7^5, etc.)
-        let t1_w73 = Complex32::new(
-            t1.re * W7_3_RE - t1.im * W7_3_IM,
-            t1.re * W7_3_IM + t1.im * W7_3_RE,
-        );
-        let t2_w76 = Complex32::new(
-            t2.re * W7_6_RE - t2.im * W7_6_IM,
-            t2.re * W7_6_IM + t2.im * W7_6_RE,
-        );
-        let t3_w72 = Complex32::new(
-            t3.re * W7_2_RE - t3.im * W7_2_IM,
-            t3.re * W7_2_IM + t3.im * W7_2_RE,
-        );
-        let t4_w75 = Complex32::new(
-            t4.re * W7_5_RE - t4.im * W7_5_IM,
-            t4.re * W7_5_IM + t4.im * W7_5_RE,
-        );
-        let t5_w71 = Complex32::new(
-            t5.re * W7_1_RE - t5.im * W7_1_IM,
-            t5.re * W7_1_IM + t5.im * W7_1_RE,
-        );
-        let t6_w74 = Complex32::new(
-            t6.re * W7_4_RE - t6.im * W7_4_IM,
-            t6.re * W7_4_IM + t6.im * W7_4_RE,
-        );
-        data[idx + 3 * num_columns] = x0
-            .add(&t1_w73)
-            .add(&t2_w76)
-            .add(&t3_w72)
-            .add(&t4_w75)
-            .add(&t5_w71)
-            .add(&t6_w74);
-
-        // X4 = x0 + t1*W_7^4 + t2*W_7^1 + t3*W_7^5 + t4*W_7^2 + t5*W_7^6 + t6*W_7^3
-        // (Note: W_7^(4*2) = W_7^8 = W_7^1, W_7^(4*3) = W_7^12 = W_7^5, W_7^(4*4) = W_7^16 = W_7^2, etc.)
-        let t1_w74 = Complex32::new(
-            t1.re * W7_4_RE - t1.im * W7_4_IM,
-            t1.re * W7_4_IM + t1.im * W7_4_RE,
-        );
-        let t2_w71 = Complex32::new(
-            t2.re * W7_1_RE - t2.im * W7_1_IM,
-            t2.re * W7_1_IM + t2.im * W7_1_RE,
-        );
-        let t3_w75 = Complex32::new(
-            t3.re * W7_5_RE - t3.im * W7_5_IM,
-            t3.re * W7_5_IM + t3.im * W7_5_RE,
-        );
-        let t4_w72 = Complex32::new(
-            t4.re * W7_2_RE - t4.im * W7_2_IM,
-            t4.re * W7_2_IM + t4.im * W7_2_RE,
-        );
-        let t5_w76 = Complex32::new(
-            t5.re * W7_6_RE - t5.im * W7_6_IM,
-            t5.re * W7_6_IM + t5.im * W7_6_RE,
-        );
-        let t6_w73 = Complex32::new(
-            t6.re * W7_3_RE - t6.im * W7_3_IM,
-            t6.re * W7_3_IM + t6.im * W7_3_RE,
-        );
-        data[idx + 4 * num_columns] = x0
-            .add(&t1_w74)
-            .add(&t2_w71)
-            .add(&t3_w75)
-            .add(&t4_w72)
-            .add(&t5_w76)
-            .add(&t6_w73);
-
-        // X5 = x0 + t1*W_7^5 + t2*W_7^3 + t3*W_7^1 + t4*W_7^6 + t5*W_7^4 + t6*W_7^2
-        // (Note: W_7^(5*2) = W_7^10 = W_7^3, W_7^(5*3) = W_7^15 = W_7^1, W_7^(5*4) = W_7^20 = W_7^6, etc.)
-        let t1_w75 = Complex32::new(
-            t1.re * W7_5_RE - t1.im * W7_5_IM,
-            t1.re * W7_5_IM + t1.im * W7_5_RE,
-        );
-        let t2_w73 = Complex32::new(
-            t2.re * W7_3_RE - t2.im * W7_3_IM,
-            t2.re * W7_3_IM + t2.im * W7_3_RE,
-        );
-        let t3_w71 = Complex32::new(
-            t3.re * W7_1_RE - t3.im * W7_1_IM,
-            t3.re * W7_1_IM + t3.im * W7_1_RE,
-        );
-        let t4_w76 = Complex32::new(
-            t4.re * W7_6_RE - t4.im * W7_6_IM,
-            t4.re * W7_6_IM + t4.im * W7_6_RE,
-        );
-        let t5_w74 = Complex32::new(
-            t5.re * W7_4_RE - t5.im * W7_4_IM,
-            t5.re * W7_4_IM + t5.im * W7_4_RE,
-        );
-        let t6_w72 = Complex32::new(
-            t6.re * W7_2_RE - t6.im * W7_2_IM,
-            t6.re * W7_2_IM + t6.im * W7_2_RE,
-        );
-        data[idx + 5 * num_columns] = x0
-            .add(&t1_w75)
-            .add(&t2_w73)
-            .add(&t3_w71)
-            .add(&t4_w76)
-            .add(&t5_w74)
-            .add(&t6_w72);
-
-        // X6 = x0 + t1*W_7^6 + t2*W_7^5 + t3*W_7^4 + t4*W_7^3 + t5*W_7^2 + t6*W_7^1
-        // (Note: W_7^(6*2) = W_7^12 = W_7^5, W_7^(6*3) = W_7^18 = W_7^4, W_7^(6*4) = W_7^24 = W_7^3, etc.)
-        let t1_w76 = Complex32::new(
-            t1.re * W7_6_RE - t1.im * W7_6_IM,
-            t1.re * W7_6_IM + t1.im * W7_6_RE,
-        );
-        let t2_w75 = Complex32::new(
-            t2.re * W7_5_RE - t2.im * W7_5_IM,
-            t2.re * W7_5_IM + t2.im * W7_5_RE,
-        );
-        let t3_w74 = Complex32::new(
-            t3.re * W7_4_RE - t3.im * W7_4_IM,
-            t3.re * W7_4_IM + t3.im * W7_4_RE,
-        );
-        let t4_w73 = Complex32::new(
-            t4.re * W7_3_RE - t4.im * W7_3_IM,
-            t4.re * W7_3_IM + t4.im * W7_3_RE,
-        );
-        let t5_w72 = Complex32::new(
-            t5.re * W7_2_RE - t5.im * W7_2_IM,
-            t5.re * W7_2_IM + t5.im * W7_2_RE,
-        );
-        let t6_w71 = Complex32::new(
-            t6.re * W7_1_RE - t6.im * W7_1_IM,
-            t6.re * W7_1_IM + t6.im * W7_1_RE,
-        );
-        data[idx + 6 * num_columns] = x0
-            .add(&t1_w76)
-            .add(&t2_w75)
-            .add(&t3_w74)
-            .add(&t4_w73)
-            .add(&t5_w72)
-            .add(&t6_w71);
-    }
-}
-
-/// Dispatches to the best available SIMD implementation.
-#[inline(always)]
-pub(crate) fn butterfly_7_dispatch(
-    data: &mut [Complex32],
-    stage_twiddles: &[Complex32],
-    num_columns: usize,
-) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
-    {
-        if num_columns >= 4 {
-            return unsafe { avx::butterfly_7_avx_fma(data, stage_twiddles, 0, num_columns) };
+    unsafe {
+        if seventh_samples >= 4 {
+            return match stride {
+                1 => avx::butterfly_radix7_stride1_avx_fma(src, dst, stage_twiddles),
+                _ => avx::butterfly_radix7_generic_avx_fma(src, dst, stage_twiddles, stride),
+            };
         }
     }
 
     #[cfg(all(
         target_arch = "x86_64",
-        target_feature = "avx",
-        not(target_feature = "fma")
+        target_feature = "sse4.2",
+        not(all(target_feature = "avx", target_feature = "fma"))
     ))]
-    {
-        if num_columns >= 4 {
-            return unsafe { avx::butterfly_7_avx(data, stage_twiddles, 0, num_columns) };
-        }
-    }
-
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse3"))]
-    {
-        if num_columns >= 2 {
-            return unsafe { sse::butterfly_7_sse3(data, stage_twiddles, 0, num_columns) };
+    unsafe {
+        if seventh_samples >= 2 {
+            return match stride {
+                1 => sse4_2::butterfly_radix7_stride1_sse4_2(src, dst, stage_twiddles),
+                _ => sse4_2::butterfly_radix7_generic_sse4_2(src, dst, stage_twiddles, stride),
+            };
         }
     }
 
     #[cfg(all(
         target_arch = "x86_64",
         target_feature = "sse2",
-        not(target_feature = "sse3")
+        not(target_feature = "sse4.2")
     ))]
-    {
-        if num_columns >= 2 {
-            return unsafe { sse::butterfly_7_sse2(data, stage_twiddles, 0, num_columns) };
+    unsafe {
+        if seventh_samples >= 2 {
+            return match stride {
+                1 => sse2::butterfly_radix7_stride1_sse2(src, dst, stage_twiddles),
+                _ => sse2::butterfly_radix7_generic_sse2(src, dst, stage_twiddles, stride),
+            };
         }
     }
 
     #[cfg(target_arch = "aarch64")]
-    {
-        if num_columns >= 2 {
-            return unsafe { neon::butterfly_7_neon(data, stage_twiddles, 0, num_columns) };
+    unsafe {
+        let seventh_samples = samples / 7;
+        if seventh_samples >= 2 {
+            return match stride {
+                1 => neon::butterfly_radix7_stride1_neon(src, dst, stage_twiddles),
+                _ => neon::butterfly_radix7_generic_neon(src, dst, stage_twiddles, stride),
+            };
         }
     }
 
-    butterfly_7_scalar(data, stage_twiddles, 0, num_columns);
+    butterfly_radix7_scalar(src, dst, stage_twiddles, stride);
 }
 
+/// AVX+FMA dispatcher for p1 (stride=1) variant
 #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
 #[inline(always)]
-pub(crate) fn butterfly_7_dispatch_avx_fma(
-    data: &mut [Complex32],
+pub(crate) fn butterfly_radix7_stride1_avx_fma_dispatch(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    num_columns: usize,
 ) {
-    if num_columns >= 4 {
-        return unsafe { avx::butterfly_7_avx_fma(data, stage_twiddles, 0, num_columns) };
+    let samples = src.len();
+    let seventh_samples = samples / 7;
+
+    if seventh_samples >= 4 {
+        return unsafe { avx::butterfly_radix7_stride1_avx_fma(src, dst, stage_twiddles) };
     }
 
-    if num_columns >= 2 {
-        return unsafe { sse::butterfly_7_sse3(data, stage_twiddles, 0, num_columns) };
-    }
-
-    butterfly_7_scalar(data, stage_twiddles, 0, num_columns);
+    butterfly_radix7_scalar(src, dst, stage_twiddles, 1);
 }
 
+/// AVX+FMA dispatcher for generic (stride>1) variant
 #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
 #[inline(always)]
-pub(crate) fn butterfly_7_dispatch_avx(
-    data: &mut [Complex32],
+pub(crate) fn butterfly_radix7_generic_avx_fma_dispatch(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    num_columns: usize,
+    stride: usize,
 ) {
-    if num_columns >= 4 {
-        return unsafe { avx::butterfly_7_avx(data, stage_twiddles, 0, num_columns) };
+    let samples = src.len();
+    let seventh_samples = samples / 7;
+
+    if seventh_samples >= 4 {
+        return unsafe { avx::butterfly_radix7_generic_avx_fma(src, dst, stage_twiddles, stride) };
     }
 
-    if num_columns >= 2 {
-        return unsafe { sse::butterfly_7_sse3(data, stage_twiddles, 0, num_columns) };
-    }
-
-    butterfly_7_scalar(data, stage_twiddles, 0, num_columns);
+    butterfly_radix7_scalar(src, dst, stage_twiddles, stride);
 }
 
+/// SSE2 dispatcher for p1 (stride=1) variant
 #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
 #[inline(always)]
-pub(crate) fn butterfly_7_dispatch_sse3(
-    data: &mut [Complex32],
+pub(crate) fn butterfly_radix7_stride1_sse2_dispatch(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    num_columns: usize,
 ) {
-    if num_columns >= 2 {
-        return unsafe { sse::butterfly_7_sse3(data, stage_twiddles, 0, num_columns) };
+    let samples = src.len();
+    let seventh_samples = samples / 7;
+
+    if seventh_samples >= 2 {
+        return unsafe { sse2::butterfly_radix7_stride1_sse2(src, dst, stage_twiddles) };
     }
 
-    butterfly_7_scalar(data, stage_twiddles, 0, num_columns);
+    butterfly_radix7_scalar(src, dst, stage_twiddles, 1);
 }
 
+/// SSE2 dispatcher for generic (stride>1) variant
 #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
 #[inline(always)]
-pub(crate) fn butterfly_7_dispatch_sse2(
-    data: &mut [Complex32],
+pub(crate) fn butterfly_radix7_generic_sse2_dispatch(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    num_columns: usize,
+    stride: usize,
 ) {
-    if num_columns >= 2 {
-        return unsafe { sse::butterfly_7_sse2(data, stage_twiddles, 0, num_columns) };
+    let samples = src.len();
+    let seventh_samples = samples / 7;
+
+    if seventh_samples >= 2 {
+        return unsafe { sse2::butterfly_radix7_generic_sse2(src, dst, stage_twiddles, stride) };
     }
 
-    butterfly_7_scalar(data, stage_twiddles, 0, num_columns);
+    butterfly_radix7_scalar(src, dst, stage_twiddles, stride);
+}
+
+/// SSE4.2 dispatcher for p1 (stride=1) variant
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+#[inline(always)]
+pub(crate) fn butterfly_radix7_stride1_sse4_2_dispatch(
+    src: &[Complex32],
+    dst: &mut [Complex32],
+    stage_twiddles: &[Complex32],
+) {
+    let samples = src.len();
+    let seventh_samples = samples / 7;
+
+    if seventh_samples >= 2 {
+        return unsafe { sse4_2::butterfly_radix7_stride1_sse4_2(src, dst, stage_twiddles) };
+    }
+
+    butterfly_radix7_scalar(src, dst, stage_twiddles, 1);
+}
+
+/// SSE4.2 dispatcher for generic (stride>1) variant
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+#[inline(always)]
+pub(crate) fn butterfly_radix7_generic_sse4_2_dispatch(
+    src: &[Complex32],
+    dst: &mut [Complex32],
+    stage_twiddles: &[Complex32],
+    stride: usize,
+) {
+    let samples = src.len();
+    let seventh_samples = samples / 7;
+
+    if seventh_samples >= 2 {
+        return unsafe {
+            sse4_2::butterfly_radix7_generic_sse4_2(src, dst, stage_twiddles, stride)
+        };
+    }
+
+    butterfly_radix7_scalar(src, dst, stage_twiddles, stride);
+}
+
+/// Performs a single radix-7 Stockham butterfly stage (out-of-place, scalar).
+#[inline(always)]
+fn butterfly_radix7_scalar(
+    src: &[Complex32],
+    dst: &mut [Complex32],
+    stage_twiddles: &[Complex32],
+    stride: usize,
+) {
+    let samples = src.len();
+    let seventh_samples = samples / 7;
+
+    for i in 0..seventh_samples {
+        let k = i % stride;
+        let w1 = stage_twiddles[i * 6];
+        let w2 = stage_twiddles[i * 6 + 1];
+        let w3 = stage_twiddles[i * 6 + 2];
+        let w4 = stage_twiddles[i * 6 + 3];
+        let w5 = stage_twiddles[i * 6 + 4];
+        let w6 = stage_twiddles[i * 6 + 5];
+
+        let z0 = src[i];
+        let z1 = src[i + seventh_samples];
+        let z2 = src[i + seventh_samples * 2];
+        let z3 = src[i + seventh_samples * 3];
+        let z4 = src[i + seventh_samples * 4];
+        let z5 = src[i + seventh_samples * 5];
+        let z6 = src[i + seventh_samples * 6];
+
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+        let t3 = w3.mul(&z3);
+        let t4 = w4.mul(&z4);
+        let t5 = w5.mul(&z5);
+        let t6 = w6.mul(&z6);
+
+        let sum_all = t1.add(&t2).add(&t3).add(&t4).add(&t5).add(&t6);
+
+        // Radix-7 DFT decomposition.
+        let a1 = t1.add(&t6);
+        let a2 = t2.add(&t5);
+        let a3 = t3.add(&t4);
+
+        let b1_re = t1.im - t6.im;
+        let b1_im = t6.re - t1.re;
+        let b2_re = t2.im - t5.im;
+        let b2_im = t5.re - t2.re;
+        let b3_re = t3.im - t4.im;
+        let b3_im = t4.re - t3.re;
+
+        let j = 7 * i - 6 * k;
+        dst[j] = z0.add(&sum_all);
+
+        for idx in 1..7 {
+            let (cos1, sin1, cos2, sin2, cos3, sin3) = match idx {
+                1 => (
+                    COS_2PI_7, SIN_2PI_7, COS_4PI_7, SIN_4PI_7, COS_6PI_7, SIN_6PI_7,
+                ),
+                2 => (
+                    COS_4PI_7, SIN_4PI_7, COS_6PI_7, -SIN_6PI_7, COS_2PI_7, -SIN_2PI_7,
+                ),
+                3 => (
+                    COS_6PI_7, SIN_6PI_7, COS_2PI_7, -SIN_2PI_7, COS_4PI_7, SIN_4PI_7,
+                ),
+                4 => (
+                    COS_6PI_7, -SIN_6PI_7, COS_2PI_7, SIN_2PI_7, COS_4PI_7, -SIN_4PI_7,
+                ),
+                5 => (
+                    COS_4PI_7, -SIN_4PI_7, COS_6PI_7, SIN_6PI_7, COS_2PI_7, SIN_2PI_7,
+                ),
+                6 => (
+                    COS_2PI_7, -SIN_2PI_7, COS_4PI_7, -SIN_4PI_7, COS_6PI_7, -SIN_6PI_7,
+                ),
+                _ => unreachable!(),
+            };
+
+            let c_re = z0.re + cos1 * a1.re + cos2 * a2.re + cos3 * a3.re;
+            let c_im = z0.im + cos1 * a1.im + cos2 * a2.im + cos3 * a3.im;
+            let d_re = sin1 * b1_re + sin2 * b2_re + sin3 * b3_re;
+            let d_im = sin1 * b1_im + sin2 * b2_im + sin3 * b3_im;
+
+            dst[j + stride * idx] = Complex32::new(c_re + d_re, c_im + d_im);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{super::test_helpers::test_butterfly_against_scalar, *};
-
-    #[test]
-    #[cfg(target_arch = "aarch64")]
-    fn test_butterfly_7_neon_vs_scalar() {
-        test_butterfly_against_scalar(
-            |data, twiddles, num_columns| butterfly_7_scalar(data, twiddles, 0, num_columns),
-            |data, twiddles, num_columns| unsafe {
-                neon::butterfly_7_neon(data, twiddles, 0, num_columns);
-            },
-            7,
-            6,
-            "butterfly_7_neon",
-        );
-    }
-
-    #[test]
-    #[cfg(all(
-        target_arch = "x86_64",
-        any(not(feature = "no_std"), target_feature = "sse2")
-    ))]
-    fn test_butterfly_7_sse2_vs_scalar() {
-        test_butterfly_against_scalar(
-            |data, twiddles, num_columns| butterfly_7_scalar(data, twiddles, 0, num_columns),
-            |data, twiddles, num_columns| unsafe {
-                sse::butterfly_7_sse2(data, twiddles, 0, num_columns);
-            },
-            7,
-            6,
-            "butterfly_7_sse2",
-        );
-    }
-
-    #[test]
-    #[cfg(all(
-        target_arch = "x86_64",
-        any(not(feature = "no_std"), target_feature = "sse3")
-    ))]
-    fn test_butterfly_7_sse3_vs_scalar() {
-        test_butterfly_against_scalar(
-            |data, twiddles, num_columns| butterfly_7_scalar(data, twiddles, 0, num_columns),
-            |data, twiddles, num_columns| unsafe {
-                sse::butterfly_7_sse3(data, twiddles, 0, num_columns);
-            },
-            7,
-            6,
-            "butterfly_7_sse3",
-        );
-    }
-
-    #[test]
-    #[cfg(all(
-        target_arch = "x86_64",
-        any(not(feature = "no_std"), target_feature = "avx")
-    ))]
-    fn test_butterfly_7_avx_vs_scalar() {
-        test_butterfly_against_scalar(
-            |data, twiddles, num_columns| butterfly_7_scalar(data, twiddles, 0, num_columns),
-            |data, twiddles, num_columns| unsafe {
-                avx::butterfly_7_avx(data, twiddles, 0, num_columns);
-            },
-            7,
-            6,
-            "butterfly_7_avx",
-        );
-    }
+    use super::*;
 
     #[test]
     #[cfg(all(
@@ -461,15 +326,73 @@ mod tests {
             all(target_feature = "avx", target_feature = "fma")
         )
     ))]
-    fn test_butterfly_7_avx_fma_vs_scalar() {
-        test_butterfly_against_scalar(
-            |data, twiddles, num_columns| butterfly_7_scalar(data, twiddles, 0, num_columns),
-            |data, twiddles, num_columns| unsafe {
-                avx::butterfly_7_avx_fma(data, twiddles, 0, num_columns);
+    fn test_butterfly_radix7_avx_fma_vs_scalar() {
+        crate::fft::butterflies::tests::test_butterfly_against_scalar(
+            butterfly_radix7_scalar,
+            |src, dst, twiddles, p| unsafe {
+                if p == 1 {
+                    avx::butterfly_radix7_stride1_avx_fma(src, dst, twiddles);
+                } else {
+                    avx::butterfly_radix7_generic_avx_fma(src, dst, twiddles, p);
+                }
             },
             7,
             6,
-            "butterfly_7_avx_fma",
+            "butterfly_radix7_avx_fma",
+        );
+    }
+
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    fn test_butterfly_radix7_sse2_vs_scalar() {
+        crate::fft::butterflies::tests::test_butterfly_against_scalar(
+            butterfly_radix7_scalar,
+            |src, dst, twiddles, p| unsafe {
+                if p == 1 {
+                    sse2::butterfly_radix7_stride1_sse2(src, dst, twiddles);
+                } else {
+                    sse2::butterfly_radix7_generic_sse2(src, dst, twiddles, p);
+                }
+            },
+            7,
+            6,
+            "butterfly_radix7_sse2",
+        );
+    }
+
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse4.2"))]
+    fn test_butterfly_radix7_sse4_2_vs_scalar() {
+        crate::fft::butterflies::tests::test_butterfly_against_scalar(
+            butterfly_radix7_scalar,
+            |src, dst, twiddles, p| unsafe {
+                if p == 1 {
+                    sse4_2::butterfly_radix7_stride1_sse4_2(src, dst, twiddles);
+                } else {
+                    sse4_2::butterfly_radix7_generic_sse4_2(src, dst, twiddles, p);
+                }
+            },
+            7,
+            6,
+            "butterfly_radix7_sse4_2",
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_butterfly_radix7_neon_vs_scalar() {
+        crate::fft::butterflies::tests::test_butterfly_against_scalar(
+            butterfly_radix7_scalar,
+            |src, dst, twiddles, p| unsafe {
+                if p == 1 {
+                    neon::butterfly_radix7_stride1_neon(src, dst, twiddles);
+                } else {
+                    neon::butterfly_radix7_generic_neon(src, dst, twiddles, p);
+                }
+            },
+            7,
+            6,
+            "butterfly_radix7_neon",
         );
     }
 }

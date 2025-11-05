@@ -1,599 +1,469 @@
-#[cfg(any(test, not(feature = "no_std"), target_feature = "avx"))]
-use crate::Complex32;
+use super::{COS_2PI_5, COS_4PI_5, SIN_2PI_5, SIN_4PI_5};
+use crate::fft::Complex32;
 
-/// AVX implementation: processes 4 columns at once.
-#[cfg(any(
-    test,
-    not(feature = "no_std"),
-    all(target_feature = "avx", not(target_feature = "fma"))
-))]
-#[target_feature(enable = "avx")]
-pub(super) unsafe fn butterfly_5_avx(
-    data: &mut [Complex32],
+/// Performs a single radix-5 Stockham butterfly stage (out-of-place, AVX+FMA) for stride=1 (first stage).
+#[target_feature(enable = "avx,fma")]
+pub(super) unsafe fn butterfly_radix5_stride1_avx_fma(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
 ) {
     use core::arch::x86_64::*;
 
+    let samples = src.len();
+    let fifth_samples = samples / 5;
+    let simd_iters = (fifth_samples >> 2) << 2;
+
     unsafe {
-        let simd_cols = ((num_columns - start_col) / 4) * 4;
+        let cos_2pi_5_vec = _mm256_set1_ps(COS_2PI_5);
+        let sin_2pi_5_vec = _mm256_set1_ps(SIN_2PI_5);
+        let cos_4pi_5_vec = _mm256_set1_ps(COS_4PI_5);
+        let sin_4pi_5_vec = _mm256_set1_ps(SIN_4PI_5);
 
-        // Broadcast W5 constants for SIMD operations.
-        let w5_1_re = _mm256_set1_ps(super::W5_1_RE);
-        let w5_1_im = _mm256_set1_ps(super::W5_1_IM);
-        let w5_2_re = _mm256_set1_ps(super::W5_2_RE);
-        let w5_2_im = _mm256_set1_ps(super::W5_2_IM);
-        let w5_3_re = _mm256_set1_ps(super::W5_3_RE);
-        let w5_3_im = _mm256_set1_ps(super::W5_3_IM);
-        let w5_4_re = _mm256_set1_ps(super::W5_4_RE);
-        let w5_4_im = _mm256_set1_ps(super::W5_4_IM);
+        for i in (0..simd_iters).step_by(4) {
+            let z0_ptr = src.as_ptr().add(i) as *const f32;
+            let z0 = _mm256_loadu_ps(z0_ptr);
 
-        for idx in (start_col..start_col + simd_cols).step_by(4) {
-            // Load 4 complex numbers from each row.
-            // Layout: [x0[0].re, x0[0].im, x0[1].re, x0[1].im, x0[2].re, x0[2].im, x0[3].re, x0[3].im]
-            let x0_ptr = data.as_ptr().add(idx) as *const f32;
-            let x0 = _mm256_loadu_ps(x0_ptr);
+            let z1_ptr = src.as_ptr().add(i + fifth_samples) as *const f32;
+            let z1 = _mm256_loadu_ps(z1_ptr);
 
-            let x1_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
-            let x1 = _mm256_loadu_ps(x1_ptr);
+            let z2_ptr = src.as_ptr().add(i + fifth_samples * 2) as *const f32;
+            let z2 = _mm256_loadu_ps(z2_ptr);
 
-            let x2_ptr = data.as_ptr().add(idx + 2 * num_columns) as *const f32;
-            let x2 = _mm256_loadu_ps(x2_ptr);
+            let z3_ptr = src.as_ptr().add(i + fifth_samples * 3) as *const f32;
+            let z3 = _mm256_loadu_ps(z3_ptr);
 
-            let x3_ptr = data.as_ptr().add(idx + 3 * num_columns) as *const f32;
-            let x3 = _mm256_loadu_ps(x3_ptr);
+            let z4_ptr = src.as_ptr().add(i + fifth_samples * 4) as *const f32;
+            let z4 = _mm256_loadu_ps(z4_ptr);
 
-            let x4_ptr = data.as_ptr().add(idx + 4 * num_columns) as *const f32;
-            let x4 = _mm256_loadu_ps(x4_ptr);
-
-            // Load 16 twiddle factors: w1[0], w2[0], w3[0], w4[0], w1[1], w2[1], w3[1], w4[1], ...
-            // Layout: [w1[0].re, w1[0].im, w2[0].re, w2[0].im, w3[0].re, w3[0].im, w4[0].re, w4[0].im]
-            let tw_ptr = stage_twiddles.as_ptr().add(idx * 4) as *const f32;
+            // Load 16 twiddles contiguously.
+            let tw_ptr = stage_twiddles.as_ptr().add(i * 4) as *const f32;
             let tw_0 = _mm256_loadu_ps(tw_ptr);
-            // Layout: [w1[1].re, w1[1].im, w2[1].re, w2[1].im, w3[1].re, w3[1].im, w4[1].re, w4[1].im]
             let tw_1 = _mm256_loadu_ps(tw_ptr.add(8));
-            // Layout: [w1[2].re, w1[2].im, w2[2].re, w2[2].im, w3[2].re, w3[2].im, w4[2].re, w4[2].im]
             let tw_2 = _mm256_loadu_ps(tw_ptr.add(16));
-            // Layout: [w1[3].re, w1[3].im, w2[3].re, w2[3].im, w3[3].re, w3[3].im, w4[3].re, w4[3].im]
             let tw_3 = _mm256_loadu_ps(tw_ptr.add(24));
 
-            // Extract w1, w2, w3, w4 for all 4 columns.
+            // Extract w1, w2, w3, w4 from contiguous loads.
+            let temp_01 = _mm256_permute2f128_ps(tw_0, tw_2, 0x20);
+            let temp_23 = _mm256_permute2f128_ps(tw_1, tw_3, 0x20);
+            let temp_45 = _mm256_permute2f128_ps(tw_0, tw_2, 0x31);
+            let temp_67 = _mm256_permute2f128_ps(tw_1, tw_3, 0x31);
+
+            let w1 = _mm256_shuffle_ps(temp_01, temp_23, 0b01_00_01_00);
+            let w2 = _mm256_shuffle_ps(temp_01, temp_23, 0b11_10_11_10);
+            let w3 = _mm256_shuffle_ps(temp_45, temp_67, 0b01_00_01_00);
+            let w4 = _mm256_shuffle_ps(temp_45, temp_67, 0b11_10_11_10);
+
+            // Complex multiply: t1 = w1 * z1, t2 = w2 * z2, t3 = w3 * z3, t4 = w4 * z4
+            let z1_re = _mm256_moveldup_ps(z1);
+            let z1_im = _mm256_movehdup_ps(z1);
+            let w1_swap = _mm256_permute_ps(w1, 0b10_11_00_01);
+            let prod1_im = _mm256_mul_ps(w1_swap, z1_im);
+            let t1 = _mm256_fmaddsub_ps(w1, z1_re, prod1_im);
+
+            let z2_re = _mm256_moveldup_ps(z2);
+            let z2_im = _mm256_movehdup_ps(z2);
+            let w2_swap = _mm256_permute_ps(w2, 0b10_11_00_01);
+            let prod2_im = _mm256_mul_ps(w2_swap, z2_im);
+            let t2 = _mm256_fmaddsub_ps(w2, z2_re, prod2_im);
+
+            let z3_re = _mm256_moveldup_ps(z3);
+            let z3_im = _mm256_movehdup_ps(z3);
+            let w3_swap = _mm256_permute_ps(w3, 0b10_11_00_01);
+            let prod3_im = _mm256_mul_ps(w3_swap, z3_im);
+            let t3 = _mm256_fmaddsub_ps(w3, z3_re, prod3_im);
+
+            let z4_re = _mm256_moveldup_ps(z4);
+            let z4_im = _mm256_movehdup_ps(z4);
+            let w4_swap = _mm256_permute_ps(w4, 0b10_11_00_01);
+            let prod4_im = _mm256_mul_ps(w4_swap, z4_im);
+            let t4 = _mm256_fmaddsub_ps(w4, z4_re, prod4_im);
+
+            // Radix-5 DFT.
+            let sum_all = _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(t1, t2), t3), t4);
+
+            let a1 = _mm256_add_ps(t1, t4);
+            let a2 = _mm256_add_ps(t2, t3);
+
+            // b1 = i * (t1 - t4), b2 = i * (t2 - t3)
+            let t1_sub_t4 = _mm256_sub_ps(t1, t4);
+            let t2_sub_t3 = _mm256_sub_ps(t2, t3);
+            let sign_mask = _mm256_set_ps(-0.0, 0.0, -0.0, 0.0, -0.0, 0.0, -0.0, 0.0);
+            let b1_swapped = _mm256_shuffle_ps(t1_sub_t4, t1_sub_t4, 0b10_11_00_01);
+            let b1 = _mm256_xor_ps(b1_swapped, sign_mask);
+            let b2_swapped = _mm256_shuffle_ps(t2_sub_t3, t2_sub_t3, 0b10_11_00_01);
+            let b2 = _mm256_xor_ps(b2_swapped, sign_mask);
+
+            // c1 = z0 + COS_2PI_5 * a1 + COS_4PI_5 * a2
+            let c1 = _mm256_add_ps(
+                z0,
+                _mm256_add_ps(
+                    _mm256_mul_ps(cos_2pi_5_vec, a1),
+                    _mm256_mul_ps(cos_4pi_5_vec, a2),
+                ),
+            );
+
+            // c2 = z0 + COS_4PI_5 * a1 + COS_2PI_5 * a2
+            let c2 = _mm256_add_ps(
+                z0,
+                _mm256_add_ps(
+                    _mm256_mul_ps(cos_4pi_5_vec, a1),
+                    _mm256_mul_ps(cos_2pi_5_vec, a2),
+                ),
+            );
+
+            // d1 = SIN_2PI_5 * b1 + SIN_4PI_5 * b2
+            let d1 = _mm256_add_ps(
+                _mm256_mul_ps(sin_2pi_5_vec, b1),
+                _mm256_mul_ps(sin_4pi_5_vec, b2),
+            );
+
+            // d2 = SIN_4PI_5 * b1 - SIN_2PI_5 * b2
+            let d2 = _mm256_sub_ps(
+                _mm256_mul_ps(sin_4pi_5_vec, b1),
+                _mm256_mul_ps(sin_2pi_5_vec, b2),
+            );
+
+            // Final outputs.
+            let out0 = _mm256_add_ps(z0, sum_all);
+            let out1 = _mm256_add_ps(c1, d1);
+            let out4 = _mm256_sub_ps(c1, d1);
+            let out2 = _mm256_add_ps(c2, d2);
+            let out3 = _mm256_sub_ps(c2, d2);
+
+            // Interleave for sequential stores: [out0[0], out1[0], out2[0], out3[0], out4[0], ...]
+            let out0_pd = _mm256_castps_pd(out0);
+            let out1_pd = _mm256_castps_pd(out1);
+            let out2_pd = _mm256_castps_pd(out2);
+            let out3_pd = _mm256_castps_pd(out3);
+            let out4_pd = _mm256_castps_pd(out4);
+
+            // Extract 128-bit lanes (each containing 2 complex numbers).
+            let out0_lo = _mm256_castpd256_pd128(out0_pd);
+            let out0_hi = _mm256_extractf128_pd(out0_pd, 1);
+            let out1_lo = _mm256_castpd256_pd128(out1_pd);
+            let out1_hi = _mm256_extractf128_pd(out1_pd, 1);
+            let out2_lo = _mm256_castpd256_pd128(out2_pd);
+            let out2_hi = _mm256_extractf128_pd(out2_pd, 1);
+            let out3_lo = _mm256_castpd256_pd128(out3_pd);
+            let out3_hi = _mm256_extractf128_pd(out3_pd, 1);
+            let out4_lo = _mm256_castpd256_pd128(out4_pd);
+            let out4_hi = _mm256_extractf128_pd(out4_pd, 1);
+
+            // Build result0: [out0[0], out1[0], out2[0], out3[0]]
+            let temp0_lo = _mm_unpacklo_pd(out0_lo, out1_lo); // [out0[0], out1[0]]
+            let temp0_hi = _mm_unpacklo_pd(out2_lo, out3_lo); // [out2[0], out3[0]]
+            let result0 = _mm256_castpd_ps(_mm256_set_m128d(temp0_hi, temp0_lo));
+
+            // Build result1: [out4[0], out0[1], out1[1], out2[1]]
+            let temp1_lo = _mm_shuffle_pd::<2>(out4_lo, out0_lo); // [out4[0], out0[1]]
+            let temp1_hi = _mm_unpackhi_pd(out1_lo, out2_lo); // [out1[1], out2[1]]
+            let result1 = _mm256_castpd_ps(_mm256_set_m128d(temp1_hi, temp1_lo));
+
+            // Build result2: [out3[1], out4[1], out0[2], out1[2]]
+            let temp2_lo = _mm_unpackhi_pd(out3_lo, out4_lo); // [out3[1], out4[1]]
+            let temp2_hi = _mm_unpacklo_pd(out0_hi, out1_hi); // [out0[2], out1[2]]
+            let result2 = _mm256_castpd_ps(_mm256_set_m128d(temp2_hi, temp2_lo));
+
+            // Build result3: [out2[2], out3[2], out4[2], out0[3]]
+            let temp3_lo = _mm_unpacklo_pd(out2_hi, out3_hi); // [out2[2], out3[2]]
+            let temp3_hi = _mm_shuffle_pd::<2>(out4_hi, out0_hi); // [out4[2], out0[3]]
+            let result3 = _mm256_castpd_ps(_mm256_set_m128d(temp3_hi, temp3_lo));
+
+            // Build result4: [out1[3], out2[3], out3[3], out4[3]]
+            let temp4_lo = _mm_unpackhi_pd(out1_hi, out2_hi); // [out1[3], out2[3]]
+            let temp4_hi = _mm_unpackhi_pd(out3_hi, out4_hi); // [out3[3], out4[3]]
+            let result4 = _mm256_castpd_ps(_mm256_set_m128d(temp4_hi, temp4_lo));
+
+            // Sequential stores.
+            let j = 5 * i;
+            let dst_ptr = dst.as_mut_ptr().add(j) as *mut f32;
+            _mm256_storeu_ps(dst_ptr, result0);
+            _mm256_storeu_ps(dst_ptr.add(8), result1);
+            _mm256_storeu_ps(dst_ptr.add(16), result2);
+            _mm256_storeu_ps(dst_ptr.add(24), result3);
+            _mm256_storeu_ps(dst_ptr.add(32), result4);
+        }
+    }
+
+    for i in simd_iters..fifth_samples {
+        let w1 = stage_twiddles[i * 4];
+        let w2 = stage_twiddles[i * 4 + 1];
+        let w3 = stage_twiddles[i * 4 + 2];
+        let w4 = stage_twiddles[i * 4 + 3];
+
+        let z0 = src[i];
+        let z1 = src[i + fifth_samples];
+        let z2 = src[i + fifth_samples * 2];
+        let z3 = src[i + fifth_samples * 3];
+        let z4 = src[i + fifth_samples * 4];
+
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+        let t3 = w3.mul(&z3);
+        let t4 = w4.mul(&z4);
+
+        let sum_all = t1.add(&t2).add(&t3).add(&t4);
+
+        let a1 = t1.add(&t4);
+        let a2 = t2.add(&t3);
+        let b1_re = t1.im - t4.im;
+        let b1_im = t4.re - t1.re;
+        let b2_re = t2.im - t3.im;
+        let b2_im = t3.re - t2.re;
+
+        let c1_re = z0.re + COS_2PI_5 * a1.re + COS_4PI_5 * a2.re;
+        let c1_im = z0.im + COS_2PI_5 * a1.im + COS_4PI_5 * a2.im;
+        let c2_re = z0.re + COS_4PI_5 * a1.re + COS_2PI_5 * a2.re;
+        let c2_im = z0.im + COS_4PI_5 * a1.im + COS_2PI_5 * a2.im;
+
+        let d1_re = SIN_2PI_5 * b1_re + SIN_4PI_5 * b2_re;
+        let d1_im = SIN_2PI_5 * b1_im + SIN_4PI_5 * b2_im;
+        let d2_re = SIN_4PI_5 * b1_re - SIN_2PI_5 * b2_re;
+        let d2_im = SIN_4PI_5 * b1_im - SIN_2PI_5 * b2_im;
+
+        let j = 5 * i;
+        dst[j] = z0.add(&sum_all);
+        dst[j + 1] = Complex32::new(c1_re + d1_re, c1_im + d1_im);
+        dst[j + 4] = Complex32::new(c1_re - d1_re, c1_im - d1_im);
+        dst[j + 2] = Complex32::new(c2_re + d2_re, c2_im + d2_im);
+        dst[j + 3] = Complex32::new(c2_re - d2_re, c2_im - d2_im);
+    }
+}
+
+/// Performs a single radix-5 Stockham butterfly stage (out-of-place, AVX+FMA) for generic p.
+#[target_feature(enable = "avx,fma")]
+pub(super) unsafe fn butterfly_radix5_generic_avx_fma(
+    src: &[Complex32],
+    dst: &mut [Complex32],
+    stage_twiddles: &[Complex32],
+    stride: usize,
+) {
+    use core::arch::x86_64::*;
+
+    let samples = src.len();
+    let fifth_samples = samples / 5;
+    let simd_iters = (fifth_samples >> 2) << 2;
+
+    unsafe {
+        let cos_2pi_5_vec = _mm256_set1_ps(COS_2PI_5);
+        let sin_2pi_5_vec = _mm256_set1_ps(SIN_2PI_5);
+        let cos_4pi_5_vec = _mm256_set1_ps(COS_4PI_5);
+        let sin_4pi_5_vec = _mm256_set1_ps(SIN_4PI_5);
+
+        for i in (0..simd_iters).step_by(4) {
+            let k0 = i % stride;
+            let k1 = (i + 1) % stride;
+            let k2 = (i + 2) % stride;
+            let k3 = (i + 3) % stride;
+
+            let z0_ptr = src.as_ptr().add(i) as *const f32;
+            let z0 = _mm256_loadu_ps(z0_ptr);
+
+            let z1_ptr = src.as_ptr().add(i + fifth_samples) as *const f32;
+            let z1 = _mm256_loadu_ps(z1_ptr);
+
+            let z2_ptr = src.as_ptr().add(i + fifth_samples * 2) as *const f32;
+            let z2 = _mm256_loadu_ps(z2_ptr);
+
+            let z3_ptr = src.as_ptr().add(i + fifth_samples * 3) as *const f32;
+            let z3 = _mm256_loadu_ps(z3_ptr);
+
+            let z4_ptr = src.as_ptr().add(i + fifth_samples * 4) as *const f32;
+            let z4 = _mm256_loadu_ps(z4_ptr);
+
+            // Load 16 twiddles contiguously.
+            let tw_ptr = stage_twiddles.as_ptr().add(i * 4) as *const f32;
+            let tw_0 = _mm256_loadu_ps(tw_ptr);
+            let tw_1 = _mm256_loadu_ps(tw_ptr.add(8));
+            let tw_2 = _mm256_loadu_ps(tw_ptr.add(16));
+            let tw_3 = _mm256_loadu_ps(tw_ptr.add(24));
+
+            // Extract w1, w2, w3, w4 from contiguous loads.
             // tw_0 = [w1[0], w2[0] | w3[0], w4[0]]
             // tw_1 = [w1[1], w2[1] | w3[1], w4[1]]
             // tw_2 = [w1[2], w2[2] | w3[2], w4[2]]
             // tw_3 = [w1[3], w2[3] | w3[3], w4[3]]
-
-            // Rearrange to group w1/w2 and w3/w4 separately
-            // temp_01 = [w1[0], w2[0] | w1[2], w2[2]]
             let temp_01 = _mm256_permute2f128_ps(tw_0, tw_2, 0x20);
-            // temp_23 = [w1[1], w2[1] | w1[3], w2[3]]
             let temp_23 = _mm256_permute2f128_ps(tw_1, tw_3, 0x20);
-            // temp_45 = [w3[0], w4[0] | w3[2], w4[2]]
             let temp_45 = _mm256_permute2f128_ps(tw_0, tw_2, 0x31);
-            // temp_67 = [w3[1], w4[1] | w3[3], w4[3]]
             let temp_67 = _mm256_permute2f128_ps(tw_1, tw_3, 0x31);
 
-            // Extract w1, w2, w3, w4
             let w1 = _mm256_shuffle_ps(temp_01, temp_23, 0b01_00_01_00);
             let w2 = _mm256_shuffle_ps(temp_01, temp_23, 0b11_10_11_10);
             let w3 = _mm256_shuffle_ps(temp_45, temp_67, 0b01_00_01_00);
             let w4 = _mm256_shuffle_ps(temp_45, temp_67, 0b11_10_11_10);
 
-            // Complex multiply: t1 = x1 * w1
-            let w1_re = _mm256_shuffle_ps(w1, w1, 0b10_10_00_00);
-            let w1_im = _mm256_shuffle_ps(w1, w1, 0b11_11_01_01);
-            let prod_re = _mm256_mul_ps(w1_re, x1);
-            let x1_swap = _mm256_shuffle_ps(x1, x1, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w1_im, x1_swap);
-            let t1 = _mm256_addsub_ps(prod_re, prod_im);
+            // Complex multiply: t1 = w1 * z1, t2 = w2 * z2, t3 = w3 * z3, t4 = w4 * z4
+            let z1_re = _mm256_moveldup_ps(z1);
+            let z1_im = _mm256_movehdup_ps(z1);
+            let w1_swap = _mm256_permute_ps(w1, 0b10_11_00_01);
+            let prod1_im = _mm256_mul_ps(w1_swap, z1_im);
+            let t1 = _mm256_fmaddsub_ps(w1, z1_re, prod1_im);
 
-            // Complex multiply: t2 = x2 * w2
-            let w2_re = _mm256_shuffle_ps(w2, w2, 0b10_10_00_00);
-            let w2_im = _mm256_shuffle_ps(w2, w2, 0b11_11_01_01);
-            let prod_re = _mm256_mul_ps(w2_re, x2);
-            let x2_swap = _mm256_shuffle_ps(x2, x2, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w2_im, x2_swap);
-            let t2 = _mm256_addsub_ps(prod_re, prod_im);
+            let z2_re = _mm256_moveldup_ps(z2);
+            let z2_im = _mm256_movehdup_ps(z2);
+            let w2_swap = _mm256_permute_ps(w2, 0b10_11_00_01);
+            let prod2_im = _mm256_mul_ps(w2_swap, z2_im);
+            let t2 = _mm256_fmaddsub_ps(w2, z2_re, prod2_im);
 
-            // Complex multiply: t3 = x3 * w3
-            let w3_re = _mm256_shuffle_ps(w3, w3, 0b10_10_00_00);
-            let w3_im = _mm256_shuffle_ps(w3, w3, 0b11_11_01_01);
-            let prod_re = _mm256_mul_ps(w3_re, x3);
-            let x3_swap = _mm256_shuffle_ps(x3, x3, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w3_im, x3_swap);
-            let t3 = _mm256_addsub_ps(prod_re, prod_im);
+            let z3_re = _mm256_moveldup_ps(z3);
+            let z3_im = _mm256_movehdup_ps(z3);
+            let w3_swap = _mm256_permute_ps(w3, 0b10_11_00_01);
+            let prod3_im = _mm256_mul_ps(w3_swap, z3_im);
+            let t3 = _mm256_fmaddsub_ps(w3, z3_re, prod3_im);
 
-            // Complex multiply: t4 = x4 * w4
-            let w4_re = _mm256_shuffle_ps(w4, w4, 0b10_10_00_00);
-            let w4_im = _mm256_shuffle_ps(w4, w4, 0b11_11_01_01);
-            let prod_re = _mm256_mul_ps(w4_re, x4);
-            let x4_swap = _mm256_shuffle_ps(x4, x4, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w4_im, x4_swap);
-            let t4 = _mm256_addsub_ps(prod_re, prod_im);
+            let z4_re = _mm256_moveldup_ps(z4);
+            let z4_im = _mm256_movehdup_ps(z4);
+            let w4_swap = _mm256_permute_ps(w4, 0b10_11_00_01);
+            let prod4_im = _mm256_mul_ps(w4_swap, z4_im);
+            let t4 = _mm256_fmaddsub_ps(w4, z4_re, prod4_im);
 
-            // Y0 = x0 + t1 + t2 + t3 + t4
-            let y0 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(x0, t1), t2), t3),
-                t4,
+            // Radix-5 DFT.
+            let sum_all = _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(t1, t2), t3), t4);
+
+            let a1 = _mm256_add_ps(t1, t4);
+            let a2 = _mm256_add_ps(t2, t3);
+
+            // b1 = i * (t1 - t4), b2 = i * (t2 - t3)
+            let t1_sub_t4 = _mm256_sub_ps(t1, t4);
+            let t2_sub_t3 = _mm256_sub_ps(t2, t3);
+            let sign_mask = _mm256_set_ps(-0.0, 0.0, -0.0, 0.0, -0.0, 0.0, -0.0, 0.0);
+            let b1_swapped = _mm256_shuffle_ps(t1_sub_t4, t1_sub_t4, 0b10_11_00_01);
+            let b1 = _mm256_xor_ps(b1_swapped, sign_mask);
+            let b2_swapped = _mm256_shuffle_ps(t2_sub_t3, t2_sub_t3, 0b10_11_00_01);
+            let b2 = _mm256_xor_ps(b2_swapped, sign_mask);
+
+            // c1 = z0 + COS_2PI_5 * a1 + COS_4PI_5 * a2
+            let c1 = _mm256_add_ps(
+                z0,
+                _mm256_add_ps(
+                    _mm256_mul_ps(cos_2pi_5_vec, a1),
+                    _mm256_mul_ps(cos_4pi_5_vec, a2),
+                ),
             );
 
-            // Y1 = x0 + t1*W_5^1 + t2*W_5^2 + t3*W_5^3 + t4*W_5^4
-            // t1*W_5^1: complex multiply t1 by (super::W5_1_RE, super::W5_1_IM)
-            let t1_re = _mm256_shuffle_ps(t1, t1, 0b10_10_00_00);
-            let t1_im = _mm256_shuffle_ps(t1, t1, 0b11_11_01_01);
-            let t1w51_re =
-                _mm256_sub_ps(_mm256_mul_ps(t1_re, w5_1_re), _mm256_mul_ps(t1_im, w5_1_im));
-            let t1w51_im =
-                _mm256_add_ps(_mm256_mul_ps(t1_re, w5_1_im), _mm256_mul_ps(t1_im, w5_1_re));
-
-            let t1_w51_lo = _mm256_unpacklo_ps(t1w51_re, t1w51_im);
-            let t1_w51_hi = _mm256_unpackhi_ps(t1w51_re, t1w51_im);
-            let t1_w51 = _mm256_shuffle_ps(t1_w51_lo, t1_w51_hi, 0b01_00_01_00);
-
-            // t2*W_5^2: complex multiply t2 by (super::W5_2_RE, super::W5_2_IM)
-            let t2_re = _mm256_shuffle_ps(t2, t2, 0b10_10_00_00);
-            let t2_im = _mm256_shuffle_ps(t2, t2, 0b11_11_01_01);
-            let t2w52_re =
-                _mm256_sub_ps(_mm256_mul_ps(t2_re, w5_2_re), _mm256_mul_ps(t2_im, w5_2_im));
-            let t2w52_im =
-                _mm256_add_ps(_mm256_mul_ps(t2_re, w5_2_im), _mm256_mul_ps(t2_im, w5_2_re));
-
-            let t2_w52_lo = _mm256_unpacklo_ps(t2w52_re, t2w52_im);
-            let t2_w52_hi = _mm256_unpackhi_ps(t2w52_re, t2w52_im);
-            let t2_w52 = _mm256_shuffle_ps(t2_w52_lo, t2_w52_hi, 0b01_00_01_00);
-
-            // t3*W_5^3: complex multiply t3 by (super::W5_3_RE, super::W5_3_IM)
-            let t3_re = _mm256_shuffle_ps(t3, t3, 0b10_10_00_00);
-            let t3_im = _mm256_shuffle_ps(t3, t3, 0b11_11_01_01);
-            let t3w53_re =
-                _mm256_sub_ps(_mm256_mul_ps(t3_re, w5_3_re), _mm256_mul_ps(t3_im, w5_3_im));
-            let t3w53_im =
-                _mm256_add_ps(_mm256_mul_ps(t3_re, w5_3_im), _mm256_mul_ps(t3_im, w5_3_re));
-
-            let t3_w53_lo = _mm256_unpacklo_ps(t3w53_re, t3w53_im);
-            let t3_w53_hi = _mm256_unpackhi_ps(t3w53_re, t3w53_im);
-            let t3_w53 = _mm256_shuffle_ps(t3_w53_lo, t3_w53_hi, 0b01_00_01_00);
-
-            // t4*W_5^4: complex multiply t4 by (super::W5_4_RE, super::W5_4_IM)
-            let t4_re = _mm256_shuffle_ps(t4, t4, 0b10_10_00_00);
-            let t4_im = _mm256_shuffle_ps(t4, t4, 0b11_11_01_01);
-            let t4w54_re =
-                _mm256_sub_ps(_mm256_mul_ps(t4_re, w5_4_re), _mm256_mul_ps(t4_im, w5_4_im));
-            let t4w54_im =
-                _mm256_add_ps(_mm256_mul_ps(t4_re, w5_4_im), _mm256_mul_ps(t4_im, w5_4_re));
-
-            let t4_w54_lo = _mm256_unpacklo_ps(t4w54_re, t4w54_im);
-            let t4_w54_hi = _mm256_unpackhi_ps(t4w54_re, t4w54_im);
-            let t4_w54 = _mm256_shuffle_ps(t4_w54_lo, t4_w54_hi, 0b01_00_01_00);
-
-            let y1 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(x0, t1_w51), t2_w52), t3_w53),
-                t4_w54,
+            // c2 = z0 + COS_4PI_5 * a1 + COS_2PI_5 * a2
+            let c2 = _mm256_add_ps(
+                z0,
+                _mm256_add_ps(
+                    _mm256_mul_ps(cos_4pi_5_vec, a1),
+                    _mm256_mul_ps(cos_2pi_5_vec, a2),
+                ),
             );
 
-            // Y2 = x0 + t1*W_5^2 + t2*W_5^4 + t3*W_5^1 + t4*W_5^3
-            // t1*W_5^2
-            let t1w52_re =
-                _mm256_sub_ps(_mm256_mul_ps(t1_re, w5_2_re), _mm256_mul_ps(t1_im, w5_2_im));
-            let t1w52_im =
-                _mm256_add_ps(_mm256_mul_ps(t1_re, w5_2_im), _mm256_mul_ps(t1_im, w5_2_re));
-
-            let t1_w52_lo = _mm256_unpacklo_ps(t1w52_re, t1w52_im);
-            let t1_w52_hi = _mm256_unpackhi_ps(t1w52_re, t1w52_im);
-            let t1_w52 = _mm256_shuffle_ps(t1_w52_lo, t1_w52_hi, 0b01_00_01_00);
-
-            // t2*W_5^4
-            let t2w54_re =
-                _mm256_sub_ps(_mm256_mul_ps(t2_re, w5_4_re), _mm256_mul_ps(t2_im, w5_4_im));
-            let t2w54_im =
-                _mm256_add_ps(_mm256_mul_ps(t2_re, w5_4_im), _mm256_mul_ps(t2_im, w5_4_re));
-
-            let t2_w54_lo = _mm256_unpacklo_ps(t2w54_re, t2w54_im);
-            let t2_w54_hi = _mm256_unpackhi_ps(t2w54_re, t2w54_im);
-            let t2_w54 = _mm256_shuffle_ps(t2_w54_lo, t2_w54_hi, 0b01_00_01_00);
-
-            // t3*W_5^1
-            let t3w51_re =
-                _mm256_sub_ps(_mm256_mul_ps(t3_re, w5_1_re), _mm256_mul_ps(t3_im, w5_1_im));
-            let t3w51_im =
-                _mm256_add_ps(_mm256_mul_ps(t3_re, w5_1_im), _mm256_mul_ps(t3_im, w5_1_re));
-
-            let t3_w51_lo = _mm256_unpacklo_ps(t3w51_re, t3w51_im);
-            let t3_w51_hi = _mm256_unpackhi_ps(t3w51_re, t3w51_im);
-            let t3_w51 = _mm256_shuffle_ps(t3_w51_lo, t3_w51_hi, 0b01_00_01_00);
-
-            // t4*W_5^3
-            let t4w53_re =
-                _mm256_sub_ps(_mm256_mul_ps(t4_re, w5_3_re), _mm256_mul_ps(t4_im, w5_3_im));
-            let t4w53_im =
-                _mm256_add_ps(_mm256_mul_ps(t4_re, w5_3_im), _mm256_mul_ps(t4_im, w5_3_re));
-
-            let t4_w53_lo = _mm256_unpacklo_ps(t4w53_re, t4w53_im);
-            let t4_w53_hi = _mm256_unpackhi_ps(t4w53_re, t4w53_im);
-            let t4_w53 = _mm256_shuffle_ps(t4_w53_lo, t4_w53_hi, 0b01_00_01_00);
-
-            let y2 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(x0, t1_w52), t2_w54), t3_w51),
-                t4_w53,
+            // d1 = SIN_2PI_5 * b1 + SIN_4PI_5 * b2
+            let d1 = _mm256_add_ps(
+                _mm256_mul_ps(sin_2pi_5_vec, b1),
+                _mm256_mul_ps(sin_4pi_5_vec, b2),
             );
 
-            // Y3 = x0 + t1*W_5^3 + t2*W_5^1 + t3*W_5^4 + t4*W_5^2
-            // t1*W_5^3
-            let t1w53_re =
-                _mm256_sub_ps(_mm256_mul_ps(t1_re, w5_3_re), _mm256_mul_ps(t1_im, w5_3_im));
-            let t1w53_im =
-                _mm256_add_ps(_mm256_mul_ps(t1_re, w5_3_im), _mm256_mul_ps(t1_im, w5_3_re));
-
-            let t1_w53_lo = _mm256_unpacklo_ps(t1w53_re, t1w53_im);
-            let t1_w53_hi = _mm256_unpackhi_ps(t1w53_re, t1w53_im);
-            let t1_w53 = _mm256_shuffle_ps(t1_w53_lo, t1_w53_hi, 0b01_00_01_00);
-
-            // t2*W_5^1
-            let t2w51_re =
-                _mm256_sub_ps(_mm256_mul_ps(t2_re, w5_1_re), _mm256_mul_ps(t2_im, w5_1_im));
-            let t2w51_im =
-                _mm256_add_ps(_mm256_mul_ps(t2_re, w5_1_im), _mm256_mul_ps(t2_im, w5_1_re));
-
-            let t2_w51_lo = _mm256_unpacklo_ps(t2w51_re, t2w51_im);
-            let t2_w51_hi = _mm256_unpackhi_ps(t2w51_re, t2w51_im);
-            let t2_w51 = _mm256_shuffle_ps(t2_w51_lo, t2_w51_hi, 0b01_00_01_00);
-
-            // t3*W_5^4
-            let t3w54_re =
-                _mm256_sub_ps(_mm256_mul_ps(t3_re, w5_4_re), _mm256_mul_ps(t3_im, w5_4_im));
-            let t3w54_im =
-                _mm256_add_ps(_mm256_mul_ps(t3_re, w5_4_im), _mm256_mul_ps(t3_im, w5_4_re));
-
-            let t3_w54_lo = _mm256_unpacklo_ps(t3w54_re, t3w54_im);
-            let t3_w54_hi = _mm256_unpackhi_ps(t3w54_re, t3w54_im);
-            let t3_w54 = _mm256_shuffle_ps(t3_w54_lo, t3_w54_hi, 0b01_00_01_00);
-
-            // t4*W_5^2
-            let t4w52_re =
-                _mm256_sub_ps(_mm256_mul_ps(t4_re, w5_2_re), _mm256_mul_ps(t4_im, w5_2_im));
-            let t4w52_im =
-                _mm256_add_ps(_mm256_mul_ps(t4_re, w5_2_im), _mm256_mul_ps(t4_im, w5_2_re));
-
-            let t4_w52_lo = _mm256_unpacklo_ps(t4w52_re, t4w52_im);
-            let t4_w52_hi = _mm256_unpackhi_ps(t4w52_re, t4w52_im);
-            let t4_w52 = _mm256_shuffle_ps(t4_w52_lo, t4_w52_hi, 0b01_00_01_00);
-
-            let y3 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(x0, t1_w53), t2_w51), t3_w54),
-                t4_w52,
+            // d2 = SIN_4PI_5 * b1 - SIN_2PI_5 * b2
+            let d2 = _mm256_sub_ps(
+                _mm256_mul_ps(sin_4pi_5_vec, b1),
+                _mm256_mul_ps(sin_2pi_5_vec, b2),
             );
 
-            // Y4 = x0 + t1*W_5^4 + t2*W_5^3 + t3*W_5^2 + t4*W_5^1
-            // t1*W_5^4
-            let t1w54_re =
-                _mm256_sub_ps(_mm256_mul_ps(t1_re, w5_4_re), _mm256_mul_ps(t1_im, w5_4_im));
-            let t1w54_im =
-                _mm256_add_ps(_mm256_mul_ps(t1_re, w5_4_im), _mm256_mul_ps(t1_im, w5_4_re));
+            // Final outputs.
+            let out0 = _mm256_add_ps(z0, sum_all);
+            let out1 = _mm256_add_ps(c1, d1);
+            let out4 = _mm256_sub_ps(c1, d1);
+            let out2 = _mm256_add_ps(c2, d2);
+            let out3 = _mm256_sub_ps(c2, d2);
 
-            let t1_w54_lo = _mm256_unpacklo_ps(t1w54_re, t1w54_im);
-            let t1_w54_hi = _mm256_unpackhi_ps(t1w54_re, t1w54_im);
-            let t1_w54 = _mm256_shuffle_ps(t1_w54_lo, t1_w54_hi, 0b01_00_01_00);
+            let j0 = 5 * i - 4 * k0;
+            let j1 = 5 * (i + 1) - 4 * k1;
+            let j2 = 5 * (i + 2) - 4 * k2;
+            let j3 = 5 * (i + 3) - 4 * k3;
 
-            // t2*W_5^3
-            let t2w53_re =
-                _mm256_sub_ps(_mm256_mul_ps(t2_re, w5_3_re), _mm256_mul_ps(t2_im, w5_3_im));
-            let t2w53_im =
-                _mm256_add_ps(_mm256_mul_ps(t2_re, w5_3_im), _mm256_mul_ps(t2_im, w5_3_re));
+            // Direct SIMD stores.
+            let out0_pd = _mm256_castps_pd(out0);
+            let out1_pd = _mm256_castps_pd(out1);
+            let out2_pd = _mm256_castps_pd(out2);
+            let out3_pd = _mm256_castps_pd(out3);
+            let out4_pd = _mm256_castps_pd(out4);
 
-            let t2_w53_lo = _mm256_unpacklo_ps(t2w53_re, t2w53_im);
-            let t2_w53_hi = _mm256_unpackhi_ps(t2w53_re, t2w53_im);
-            let t2_w53 = _mm256_shuffle_ps(t2_w53_lo, t2_w53_hi, 0b01_00_01_00);
+            let out0_lo = _mm256_castpd256_pd128(out0_pd);
+            let out0_hi = _mm256_extractf128_pd(out0_pd, 1);
+            let out1_lo = _mm256_castpd256_pd128(out1_pd);
+            let out1_hi = _mm256_extractf128_pd(out1_pd, 1);
+            let out2_lo = _mm256_castpd256_pd128(out2_pd);
+            let out2_hi = _mm256_extractf128_pd(out2_pd, 1);
+            let out3_lo = _mm256_castpd256_pd128(out3_pd);
+            let out3_hi = _mm256_extractf128_pd(out3_pd, 1);
+            let out4_lo = _mm256_castpd256_pd128(out4_pd);
+            let out4_hi = _mm256_extractf128_pd(out4_pd, 1);
 
-            // t3*W_5^2
-            let t3w52_re =
-                _mm256_sub_ps(_mm256_mul_ps(t3_re, w5_2_re), _mm256_mul_ps(t3_im, w5_2_im));
-            let t3w52_im =
-                _mm256_add_ps(_mm256_mul_ps(t3_re, w5_2_im), _mm256_mul_ps(t3_im, w5_2_re));
+            let dst_ptr = dst.as_mut_ptr() as *mut f64;
 
-            let t3_w52_lo = _mm256_unpacklo_ps(t3w52_re, t3w52_im);
-            let t3_w52_hi = _mm256_unpackhi_ps(t3w52_re, t3w52_im);
-            let t3_w52 = _mm256_shuffle_ps(t3_w52_lo, t3_w52_hi, 0b01_00_01_00);
+            _mm_storel_pd(dst_ptr.add(j0), out0_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride), out1_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 2), out2_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 3), out3_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 4), out4_lo);
 
-            // t4*W_5^1
-            let t4w51_re =
-                _mm256_sub_ps(_mm256_mul_ps(t4_re, w5_1_re), _mm256_mul_ps(t4_im, w5_1_im));
-            let t4w51_im =
-                _mm256_add_ps(_mm256_mul_ps(t4_re, w5_1_im), _mm256_mul_ps(t4_im, w5_1_re));
+            _mm_storeh_pd(dst_ptr.add(j1), out0_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride), out1_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 2), out2_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 3), out3_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 4), out4_lo);
 
-            let t4_w51_lo = _mm256_unpacklo_ps(t4w51_re, t4w51_im);
-            let t4_w51_hi = _mm256_unpackhi_ps(t4w51_re, t4w51_im);
-            let t4_w51 = _mm256_shuffle_ps(t4_w51_lo, t4_w51_hi, 0b01_00_01_00);
+            _mm_storel_pd(dst_ptr.add(j2), out0_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride), out1_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 2), out2_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 3), out3_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 4), out4_hi);
 
-            let y4 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(x0, t1_w54), t2_w53), t3_w52),
-                t4_w51,
-            );
-
-            let y0_ptr = data.as_mut_ptr().add(idx) as *mut f32;
-            _mm256_storeu_ps(y0_ptr, y0);
-            let y1_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
-            _mm256_storeu_ps(y1_ptr, y1);
-            let y2_ptr = data.as_mut_ptr().add(idx + 2 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y2_ptr, y2);
-            let y3_ptr = data.as_mut_ptr().add(idx + 3 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y3_ptr, y3);
-            let y4_ptr = data.as_mut_ptr().add(idx + 4 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y4_ptr, y4);
+            _mm_storeh_pd(dst_ptr.add(j3), out0_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride), out1_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 2), out2_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 3), out3_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 4), out4_hi);
         }
-
-        super::butterfly_5_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
     }
-}
 
-/// AVX+FMA implementation: processes 4 columns at once using fused multiply-add.
-#[cfg(any(
-    not(feature = "no_std"),
-    all(target_feature = "avx", target_feature = "fma")
-))]
-#[target_feature(enable = "avx,fma")]
-pub(super) unsafe fn butterfly_5_avx_fma(
-    data: &mut [Complex32],
-    stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
-) {
-    use core::arch::x86_64::*;
+    for i in simd_iters..fifth_samples {
+        let k = i % stride;
+        let w1 = stage_twiddles[i * 4];
+        let w2 = stage_twiddles[i * 4 + 1];
+        let w3 = stage_twiddles[i * 4 + 2];
+        let w4 = stage_twiddles[i * 4 + 3];
 
-    unsafe {
-        let simd_cols = ((num_columns - start_col) / 4) * 4;
+        let z0 = src[i];
+        let z1 = src[i + fifth_samples];
+        let z2 = src[i + fifth_samples * 2];
+        let z3 = src[i + fifth_samples * 3];
+        let z4 = src[i + fifth_samples * 4];
 
-        // Broadcast W5 constants for SIMD operations.
-        let w5_1_re = _mm256_set1_ps(super::W5_1_RE);
-        let w5_1_im = _mm256_set1_ps(super::W5_1_IM);
-        let w5_2_re = _mm256_set1_ps(super::W5_2_RE);
-        let w5_2_im = _mm256_set1_ps(super::W5_2_IM);
-        let w5_3_re = _mm256_set1_ps(super::W5_3_RE);
-        let w5_3_im = _mm256_set1_ps(super::W5_3_IM);
-        let w5_4_re = _mm256_set1_ps(super::W5_4_RE);
-        let w5_4_im = _mm256_set1_ps(super::W5_4_IM);
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+        let t3 = w3.mul(&z3);
+        let t4 = w4.mul(&z4);
 
-        for idx in (start_col..start_col + simd_cols).step_by(4) {
-            // Load 4 complex numbers from each row.
-            let x0_ptr = data.as_ptr().add(idx) as *const f32;
-            let x0 = _mm256_loadu_ps(x0_ptr);
+        let sum_all = t1.add(&t2).add(&t3).add(&t4);
 
-            let x1_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
-            let x1 = _mm256_loadu_ps(x1_ptr);
+        let a1 = t1.add(&t4);
+        let a2 = t2.add(&t3);
+        let b1_re = t1.im - t4.im;
+        let b1_im = t4.re - t1.re;
+        let b2_re = t2.im - t3.im;
+        let b2_im = t3.re - t2.re;
 
-            let x2_ptr = data.as_ptr().add(idx + 2 * num_columns) as *const f32;
-            let x2 = _mm256_loadu_ps(x2_ptr);
+        let c1_re = z0.re + COS_2PI_5 * a1.re + COS_4PI_5 * a2.re;
+        let c1_im = z0.im + COS_2PI_5 * a1.im + COS_4PI_5 * a2.im;
+        let c2_re = z0.re + COS_4PI_5 * a1.re + COS_2PI_5 * a2.re;
+        let c2_im = z0.im + COS_4PI_5 * a1.im + COS_2PI_5 * a2.im;
 
-            let x3_ptr = data.as_ptr().add(idx + 3 * num_columns) as *const f32;
-            let x3 = _mm256_loadu_ps(x3_ptr);
+        let d1_re = SIN_2PI_5 * b1_re + SIN_4PI_5 * b2_re;
+        let d1_im = SIN_2PI_5 * b1_im + SIN_4PI_5 * b2_im;
+        let d2_re = SIN_4PI_5 * b1_re - SIN_2PI_5 * b2_re;
+        let d2_im = SIN_4PI_5 * b1_im - SIN_2PI_5 * b2_im;
 
-            let x4_ptr = data.as_ptr().add(idx + 4 * num_columns) as *const f32;
-            let x4 = _mm256_loadu_ps(x4_ptr);
-
-            // Load 16 twiddle factors.
-            let tw_ptr = stage_twiddles.as_ptr().add(idx * 4) as *const f32;
-            let tw_0 = _mm256_loadu_ps(tw_ptr);
-            let tw_1 = _mm256_loadu_ps(tw_ptr.add(8));
-            let tw_2 = _mm256_loadu_ps(tw_ptr.add(16));
-            let tw_3 = _mm256_loadu_ps(tw_ptr.add(24));
-
-            // Extract w1, w2, w3, w4 for all 4 columns.
-            let temp_01 = _mm256_permute2f128_ps(tw_0, tw_2, 0x20);
-            let temp_23 = _mm256_permute2f128_ps(tw_1, tw_3, 0x20);
-            let temp_45 = _mm256_permute2f128_ps(tw_0, tw_2, 0x31);
-            let temp_67 = _mm256_permute2f128_ps(tw_1, tw_3, 0x31);
-
-            let w1 = _mm256_shuffle_ps(temp_01, temp_23, 0b01_00_01_00);
-            let w2 = _mm256_shuffle_ps(temp_01, temp_23, 0b11_10_11_10);
-            let w3 = _mm256_shuffle_ps(temp_45, temp_67, 0b01_00_01_00);
-            let w4 = _mm256_shuffle_ps(temp_45, temp_67, 0b11_10_11_10);
-
-            // Complex multiply using FMA: t1 = x1 * w1
-            let w1_re = _mm256_shuffle_ps(w1, w1, 0b10_10_00_00);
-            let w1_im = _mm256_shuffle_ps(w1, w1, 0b11_11_01_01);
-            let x1_swap = _mm256_shuffle_ps(x1, x1, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w1_im, x1_swap);
-            let t1 = _mm256_fmaddsub_ps(w1_re, x1, prod_im);
-
-            // Complex multiply using FMA: t2 = x2 * w2
-            let w2_re = _mm256_shuffle_ps(w2, w2, 0b10_10_00_00);
-            let w2_im = _mm256_shuffle_ps(w2, w2, 0b11_11_01_01);
-            let x2_swap = _mm256_shuffle_ps(x2, x2, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w2_im, x2_swap);
-            let t2 = _mm256_fmaddsub_ps(w2_re, x2, prod_im);
-
-            // Complex multiply using FMA: t3 = x3 * w3
-            let w3_re = _mm256_shuffle_ps(w3, w3, 0b10_10_00_00);
-            let w3_im = _mm256_shuffle_ps(w3, w3, 0b11_11_01_01);
-            let x3_swap = _mm256_shuffle_ps(x3, x3, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w3_im, x3_swap);
-            let t3 = _mm256_fmaddsub_ps(w3_re, x3, prod_im);
-
-            // Complex multiply using FMA: t4 = x4 * w4
-            let w4_re = _mm256_shuffle_ps(w4, w4, 0b10_10_00_00);
-            let w4_im = _mm256_shuffle_ps(w4, w4, 0b11_11_01_01);
-            let x4_swap = _mm256_shuffle_ps(x4, x4, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w4_im, x4_swap);
-            let t4 = _mm256_fmaddsub_ps(w4_re, x4, prod_im);
-
-            // Y0 = x0 + t1 + t2 + t3 + t4
-            let y0 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(x0, t1), t2), t3),
-                t4,
-            );
-
-            // Y1 = x0 + t1*W_5^1 + t2*W_5^2 + t3*W_5^3 + t4*W_5^4
-            // t1*W_5^1: complex multiply using FMA
-            let t1_re = _mm256_shuffle_ps(t1, t1, 0b10_10_00_00);
-            let t1_im = _mm256_shuffle_ps(t1, t1, 0b11_11_01_01);
-            let t1w51_re = _mm256_fmsub_ps(t1_re, w5_1_re, _mm256_mul_ps(t1_im, w5_1_im));
-            let t1w51_im = _mm256_fmadd_ps(t1_re, w5_1_im, _mm256_mul_ps(t1_im, w5_1_re));
-
-            let t1_w51_lo = _mm256_unpacklo_ps(t1w51_re, t1w51_im);
-            let t1_w51_hi = _mm256_unpackhi_ps(t1w51_re, t1w51_im);
-            let t1_w51 = _mm256_shuffle_ps(t1_w51_lo, t1_w51_hi, 0b01_00_01_00);
-
-            // t2*W_5^2: complex multiply using FMA
-            let t2_re = _mm256_shuffle_ps(t2, t2, 0b10_10_00_00);
-            let t2_im = _mm256_shuffle_ps(t2, t2, 0b11_11_01_01);
-            let t2w52_re = _mm256_fmsub_ps(t2_re, w5_2_re, _mm256_mul_ps(t2_im, w5_2_im));
-            let t2w52_im = _mm256_fmadd_ps(t2_re, w5_2_im, _mm256_mul_ps(t2_im, w5_2_re));
-
-            let t2_w52_lo = _mm256_unpacklo_ps(t2w52_re, t2w52_im);
-            let t2_w52_hi = _mm256_unpackhi_ps(t2w52_re, t2w52_im);
-            let t2_w52 = _mm256_shuffle_ps(t2_w52_lo, t2_w52_hi, 0b01_00_01_00);
-
-            // t3*W_5^3: complex multiply using FMA
-            let t3_re = _mm256_shuffle_ps(t3, t3, 0b10_10_00_00);
-            let t3_im = _mm256_shuffle_ps(t3, t3, 0b11_11_01_01);
-            let t3w53_re = _mm256_fmsub_ps(t3_re, w5_3_re, _mm256_mul_ps(t3_im, w5_3_im));
-            let t3w53_im = _mm256_fmadd_ps(t3_re, w5_3_im, _mm256_mul_ps(t3_im, w5_3_re));
-
-            let t3_w53_lo = _mm256_unpacklo_ps(t3w53_re, t3w53_im);
-            let t3_w53_hi = _mm256_unpackhi_ps(t3w53_re, t3w53_im);
-            let t3_w53 = _mm256_shuffle_ps(t3_w53_lo, t3_w53_hi, 0b01_00_01_00);
-
-            // t4*W_5^4: complex multiply using FMA
-            let t4_re = _mm256_shuffle_ps(t4, t4, 0b10_10_00_00);
-            let t4_im = _mm256_shuffle_ps(t4, t4, 0b11_11_01_01);
-            let t4w54_re = _mm256_fmsub_ps(t4_re, w5_4_re, _mm256_mul_ps(t4_im, w5_4_im));
-            let t4w54_im = _mm256_fmadd_ps(t4_re, w5_4_im, _mm256_mul_ps(t4_im, w5_4_re));
-
-            let t4_w54_lo = _mm256_unpacklo_ps(t4w54_re, t4w54_im);
-            let t4_w54_hi = _mm256_unpackhi_ps(t4w54_re, t4w54_im);
-            let t4_w54 = _mm256_shuffle_ps(t4_w54_lo, t4_w54_hi, 0b01_00_01_00);
-
-            let y1 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(x0, t1_w51), t2_w52), t3_w53),
-                t4_w54,
-            );
-
-            // Y2 = x0 + t1*W_5^2 + t2*W_5^4 + t3*W_5^1 + t4*W_5^3
-            // t1*W_5^2
-            let t1w52_re = _mm256_fmsub_ps(t1_re, w5_2_re, _mm256_mul_ps(t1_im, w5_2_im));
-            let t1w52_im = _mm256_fmadd_ps(t1_re, w5_2_im, _mm256_mul_ps(t1_im, w5_2_re));
-
-            let t1_w52_lo = _mm256_unpacklo_ps(t1w52_re, t1w52_im);
-            let t1_w52_hi = _mm256_unpackhi_ps(t1w52_re, t1w52_im);
-            let t1_w52 = _mm256_shuffle_ps(t1_w52_lo, t1_w52_hi, 0b01_00_01_00);
-
-            // t2*W_5^4
-            let t2w54_re = _mm256_fmsub_ps(t2_re, w5_4_re, _mm256_mul_ps(t2_im, w5_4_im));
-            let t2w54_im = _mm256_fmadd_ps(t2_re, w5_4_im, _mm256_mul_ps(t2_im, w5_4_re));
-
-            let t2_w54_lo = _mm256_unpacklo_ps(t2w54_re, t2w54_im);
-            let t2_w54_hi = _mm256_unpackhi_ps(t2w54_re, t2w54_im);
-            let t2_w54 = _mm256_shuffle_ps(t2_w54_lo, t2_w54_hi, 0b01_00_01_00);
-
-            // t3*W_5^1
-            let t3w51_re = _mm256_fmsub_ps(t3_re, w5_1_re, _mm256_mul_ps(t3_im, w5_1_im));
-            let t3w51_im = _mm256_fmadd_ps(t3_re, w5_1_im, _mm256_mul_ps(t3_im, w5_1_re));
-
-            let t3_w51_lo = _mm256_unpacklo_ps(t3w51_re, t3w51_im);
-            let t3_w51_hi = _mm256_unpackhi_ps(t3w51_re, t3w51_im);
-            let t3_w51 = _mm256_shuffle_ps(t3_w51_lo, t3_w51_hi, 0b01_00_01_00);
-
-            // t4*W_5^3
-            let t4w53_re = _mm256_fmsub_ps(t4_re, w5_3_re, _mm256_mul_ps(t4_im, w5_3_im));
-            let t4w53_im = _mm256_fmadd_ps(t4_re, w5_3_im, _mm256_mul_ps(t4_im, w5_3_re));
-
-            let t4_w53_lo = _mm256_unpacklo_ps(t4w53_re, t4w53_im);
-            let t4_w53_hi = _mm256_unpackhi_ps(t4w53_re, t4w53_im);
-            let t4_w53 = _mm256_shuffle_ps(t4_w53_lo, t4_w53_hi, 0b01_00_01_00);
-
-            let y2 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(x0, t1_w52), t2_w54), t3_w51),
-                t4_w53,
-            );
-
-            // Y3 = x0 + t1*W_5^3 + t2*W_5^1 + t3*W_5^4 + t4*W_5^2
-            // t1*W_5^3
-            let t1w53_re = _mm256_fmsub_ps(t1_re, w5_3_re, _mm256_mul_ps(t1_im, w5_3_im));
-            let t1w53_im = _mm256_fmadd_ps(t1_re, w5_3_im, _mm256_mul_ps(t1_im, w5_3_re));
-
-            let t1_w53_lo = _mm256_unpacklo_ps(t1w53_re, t1w53_im);
-            let t1_w53_hi = _mm256_unpackhi_ps(t1w53_re, t1w53_im);
-            let t1_w53 = _mm256_shuffle_ps(t1_w53_lo, t1_w53_hi, 0b01_00_01_00);
-
-            // t2*W_5^1
-            let t2w51_re = _mm256_fmsub_ps(t2_re, w5_1_re, _mm256_mul_ps(t2_im, w5_1_im));
-            let t2w51_im = _mm256_fmadd_ps(t2_re, w5_1_im, _mm256_mul_ps(t2_im, w5_1_re));
-
-            let t2_w51_lo = _mm256_unpacklo_ps(t2w51_re, t2w51_im);
-            let t2_w51_hi = _mm256_unpackhi_ps(t2w51_re, t2w51_im);
-            let t2_w51 = _mm256_shuffle_ps(t2_w51_lo, t2_w51_hi, 0b01_00_01_00);
-
-            // t3*W_5^4
-            let t3w54_re = _mm256_fmsub_ps(t3_re, w5_4_re, _mm256_mul_ps(t3_im, w5_4_im));
-            let t3w54_im = _mm256_fmadd_ps(t3_re, w5_4_im, _mm256_mul_ps(t3_im, w5_4_re));
-
-            let t3_w54_lo = _mm256_unpacklo_ps(t3w54_re, t3w54_im);
-            let t3_w54_hi = _mm256_unpackhi_ps(t3w54_re, t3w54_im);
-            let t3_w54 = _mm256_shuffle_ps(t3_w54_lo, t3_w54_hi, 0b01_00_01_00);
-
-            // t4*W_5^2
-            let t4w52_re = _mm256_fmsub_ps(t4_re, w5_2_re, _mm256_mul_ps(t4_im, w5_2_im));
-            let t4w52_im = _mm256_fmadd_ps(t4_re, w5_2_im, _mm256_mul_ps(t4_im, w5_2_re));
-
-            let t4_w52_lo = _mm256_unpacklo_ps(t4w52_re, t4w52_im);
-            let t4_w52_hi = _mm256_unpackhi_ps(t4w52_re, t4w52_im);
-            let t4_w52 = _mm256_shuffle_ps(t4_w52_lo, t4_w52_hi, 0b01_00_01_00);
-
-            let y3 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(x0, t1_w53), t2_w51), t3_w54),
-                t4_w52,
-            );
-
-            // Y4 = x0 + t1*W_5^4 + t2*W_5^3 + t3*W_5^2 + t4*W_5^1
-            // t1*W_5^4
-            let t1w54_re = _mm256_fmsub_ps(t1_re, w5_4_re, _mm256_mul_ps(t1_im, w5_4_im));
-            let t1w54_im = _mm256_fmadd_ps(t1_re, w5_4_im, _mm256_mul_ps(t1_im, w5_4_re));
-
-            let t1_w54_lo = _mm256_unpacklo_ps(t1w54_re, t1w54_im);
-            let t1_w54_hi = _mm256_unpackhi_ps(t1w54_re, t1w54_im);
-            let t1_w54 = _mm256_shuffle_ps(t1_w54_lo, t1_w54_hi, 0b01_00_01_00);
-
-            // t2*W_5^3
-            let t2w53_re = _mm256_fmsub_ps(t2_re, w5_3_re, _mm256_mul_ps(t2_im, w5_3_im));
-            let t2w53_im = _mm256_fmadd_ps(t2_re, w5_3_im, _mm256_mul_ps(t2_im, w5_3_re));
-
-            let t2_w53_lo = _mm256_unpacklo_ps(t2w53_re, t2w53_im);
-            let t2_w53_hi = _mm256_unpackhi_ps(t2w53_re, t2w53_im);
-            let t2_w53 = _mm256_shuffle_ps(t2_w53_lo, t2_w53_hi, 0b01_00_01_00);
-
-            // t3*W_5^2
-            let t3w52_re = _mm256_fmsub_ps(t3_re, w5_2_re, _mm256_mul_ps(t3_im, w5_2_im));
-            let t3w52_im = _mm256_fmadd_ps(t3_re, w5_2_im, _mm256_mul_ps(t3_im, w5_2_re));
-
-            let t3_w52_lo = _mm256_unpacklo_ps(t3w52_re, t3w52_im);
-            let t3_w52_hi = _mm256_unpackhi_ps(t3w52_re, t3w52_im);
-            let t3_w52 = _mm256_shuffle_ps(t3_w52_lo, t3_w52_hi, 0b01_00_01_00);
-
-            // t4*W_5^1
-            let t4w51_re = _mm256_fmsub_ps(t4_re, w5_1_re, _mm256_mul_ps(t4_im, w5_1_im));
-            let t4w51_im = _mm256_fmadd_ps(t4_re, w5_1_im, _mm256_mul_ps(t4_im, w5_1_re));
-
-            let t4_w51_lo = _mm256_unpacklo_ps(t4w51_re, t4w51_im);
-            let t4_w51_hi = _mm256_unpackhi_ps(t4w51_re, t4w51_im);
-            let t4_w51 = _mm256_shuffle_ps(t4_w51_lo, t4_w51_hi, 0b01_00_01_00);
-
-            let y4 = _mm256_add_ps(
-                _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(x0, t1_w54), t2_w53), t3_w52),
-                t4_w51,
-            );
-
-            let y0_ptr = data.as_mut_ptr().add(idx) as *mut f32;
-            _mm256_storeu_ps(y0_ptr, y0);
-            let y1_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
-            _mm256_storeu_ps(y1_ptr, y1);
-            let y2_ptr = data.as_mut_ptr().add(idx + 2 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y2_ptr, y2);
-            let y3_ptr = data.as_mut_ptr().add(idx + 3 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y3_ptr, y3);
-            let y4_ptr = data.as_mut_ptr().add(idx + 4 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y4_ptr, y4);
-        }
-
-        super::butterfly_5_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
+        let j = 5 * i - 4 * k;
+        dst[j] = z0.add(&sum_all);
+        dst[j + stride] = Complex32::new(c1_re + d1_re, c1_im + d1_im);
+        dst[j + stride * 4] = Complex32::new(c1_re - d1_re, c1_im - d1_im);
+        dst[j + stride * 2] = Complex32::new(c2_re + d2_re, c2_im + d2_im);
+        dst[j + stride * 3] = Complex32::new(c2_re - d2_re, c2_im - d2_im);
     }
 }
