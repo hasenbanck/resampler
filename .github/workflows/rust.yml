@@ -1,6 +1,7 @@
 name: Rust
 
 on:
+  workflow_dispatch:
   push:
     branches: [ master ]
   pull_request:
@@ -10,42 +11,70 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    runs-on: ${{matrix.os}}
+  build-macos:
+    name: Build - macOS aarch64
+    runs-on: macos-latest
     strategy:
       matrix:
-        os:
-          - macos-latest
-          - ubuntu-latest
-          - windows-latest
         toolchain:
           - stable
           - 1.89.0 # MSRV
-        include:
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v5
       - name: Install rust version
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{matrix.toolchain}}
-          target: ${{matrix.target}}
-      - uses: actions/checkout@v5
-      - name: Build (not default features)
-        run: cargo build --workspace --release --no-default-features
+      - name: Cache build artifacts
+        uses: Swatinem/rust-cache@v2
       - name: Build (default)
-        run: cargo build --workspace --release
-      - name: Run tests (default)
-        run: cargo test --workspace
-      - name: Build (all features)
-        run: cargo build --workspace --release --all-features
-      - name: Run tests (all features)
-        run: cargo test --workspace --all-features
+        run: cargo build
+      - name: Test (default)
+        run: cargo test
+      - name: Build (no_std)
+        run: cargo build --features no_std
+      - name: Test (no_std)
+        run: cargo test --features no_std
+
+  build-linux:
+    name: Build - Linux x86_64 (${{matrix.target-cpu}})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain:
+          - stable
+          - 1.89.0 # MSRV
+        target-cpu:
+          - baseline
+          - x86-64-v2
+          - x86-64-v3
+          # - x86-64-v4 GitHub Action Runner don't support AVX-512 yet.
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install rust version
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{matrix.toolchain}}
+      - name: Cache build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{matrix.target-cpu}}
+      - name: Build (default)
+        run: cargo build
+        env:
+          RUSTFLAGS: ${{matrix.target-cpu != 'baseline' && format('-C target-cpu={0}', matrix.target-cpu) || ''}}
+      - name: Test (default)
+        run: cargo test
+        env:
+          RUSTFLAGS: ${{matrix.target-cpu != 'baseline' && format('-C target-cpu={0}', matrix.target-cpu) || ''}}
+      - name: Build (no_std)
+        run: cargo build --features no_std
+        env:
+          RUSTFLAGS: ${{matrix.target-cpu != 'baseline' && format('-C target-cpu={0}', matrix.target-cpu) || ''}}
+      - name: Test (no_std)
+        run: cargo test --features no_std
+        env:
+          RUSTFLAGS: ${{matrix.target-cpu != 'baseline' && format('-C target-cpu={0}', matrix.target-cpu) || ''}}
 
   build-wasm:
     runs-on: ${{matrix.os}}
@@ -72,7 +101,7 @@ jobs:
 
   rustfmt:
     name: Rustfmt
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -82,13 +111,40 @@ jobs:
           toolchain: nightly
           components: rustfmt
       - name: Cache build artifacts
-        uses: Swatinem/rust-cache@v2.8.1
+        uses: Swatinem/rust-cache@v2
       - name: Check code formatted
         run: cargo fmt --all -- --check
 
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-24.04
+  clippy-macos:
+    name: Clippy - macOS aarch64
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Cache build artifacts
+        uses: Swatinem/rust-cache@v2
+      - name: Check no lint warnings
+        run: cargo clippy --workspace -- -D warnings
+      - name: Check no lint warnings (all features)
+        run: cargo clippy --workspace --all-features -- -D warnings
+      - name: Check no lint warnings (no default features)
+        run: cargo clippy --workspace --no-default-features -- -D warnings
+
+  clippy-linux:
+    name: Clippy - Linux x86_64 (${{matrix.target-cpu}})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target-cpu:
+          - baseline
+          - x86-64-v2
+          - x86-64-v3
+          # - x86-64-v4 GitHub Action Runner don't support AVX-512 yet.
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -99,10 +155,17 @@ jobs:
           components: clippy
       - name: Cache build artifacts
         uses: Swatinem/rust-cache@v2.8.1
-
+        with:
+          key: ${{matrix.target-cpu}}
       - name: Check no lint warnings
         run: cargo clippy --workspace -- -D warnings
+        env:
+          RUSTFLAGS: ${{matrix.target-cpu != 'baseline' && format('-C target-cpu={0}', matrix.target-cpu) || ''}}
       - name: Check no lint warnings (all features)
         run: cargo clippy --workspace --all-features -- -D warnings
+        env:
+          RUSTFLAGS: ${{matrix.target-cpu != 'baseline' && format('-C target-cpu={0}', matrix.target-cpu) || ''}}
       - name: Check no lint warnings (no default features)
         run: cargo clippy --workspace --no-default-features -- -D warnings
+        env:
+          RUSTFLAGS: ${{matrix.target-cpu != 'baseline' && format('-C target-cpu={0}', matrix.target-cpu) || ''}}

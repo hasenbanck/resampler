@@ -18,15 +18,18 @@ const PHASES: usize = 1024;
 const INPUT_CAPACITY: usize = 4096;
 const BUFFER_SIZE: usize = INPUT_CAPACITY * 2;
 
+type ConvolveFn =
+    fn(input: &[f32], coeffs1: &[f32], coeffs2: &[f32], frac: f32, taps: usize) -> f32;
+
 /// A 64-byte aligned memory of f32 values.
-struct AlignedMemory {
+pub(crate) struct AlignedMemory {
     ptr: *mut f32,
     len: usize,
     layout: Layout,
 }
 
 impl AlignedMemory {
-    fn new(data: Vec<f32>) -> Self {
+    pub(crate) fn new(data: Vec<f32>) -> Self {
         const ALIGNMENT: usize = 64;
 
         let len = data.len();
@@ -148,6 +151,7 @@ pub enum Latency {
 impl Latency {
     /// Returns the number of filter taps for this latency setting.
     pub const fn taps(self) -> usize {
+        // Taps need to be a power of two for convolve filter to run (there is no tail handling).
         match self {
             Latency::Sample8 => 16,
             Latency::Sample16 => 32,
@@ -191,7 +195,7 @@ pub struct ResamplerFir<const CHANNEL: usize> {
     taps: usize,
     /// Number of polyphase branches.
     phases: usize,
-    convolve_function: fn(input: &[f32], coeffs: &[f32], taps: usize) -> f32,
+    convolve_function: ConvolveFn,
 }
 
 impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
@@ -258,35 +262,61 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
             array::from_fn(|_| vec![0.0; BUFFER_SIZE].into_boxed_slice());
 
         #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
-        let convolve_function = if std::arch::is_x86_feature_detected!("avx512f") {
-            fn wrapper(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
-                unsafe { crate::fir::avx512::convolve_avx512(input, coeffs, taps) }
+        let convolve_function = if std::arch::is_x86_feature_detected!("avx512f") && taps >= 16 {
+            fn wrapper(
+                input: &[f32],
+                coeffs1: &[f32],
+                coeffs2: &[f32],
+                frac: f32,
+                taps: usize,
+            ) -> f32 {
+                unsafe {
+                    crate::fir::avx512::convolve_interp_avx512(input, coeffs1, coeffs2, frac, taps)
+                }
             }
             wrapper
         } else if std::arch::is_x86_feature_detected!("avx")
             && std::arch::is_x86_feature_detected!("fma")
         {
-            fn wrapper(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
-                unsafe { crate::fir::avx::convolve_avx_fma(input, coeffs, taps) }
+            fn wrapper(
+                input: &[f32],
+                coeffs1: &[f32],
+                coeffs2: &[f32],
+                frac: f32,
+                taps: usize,
+            ) -> f32 {
+                unsafe {
+                    crate::fir::avx::convolve_interp_avx_fma(input, coeffs1, coeffs2, frac, taps)
+                }
             }
             wrapper
-        } else if std::arch::is_x86_feature_detected!("avx") {
-            fn wrapper(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
-                unsafe { crate::fir::avx::convolve_avx(input, coeffs, taps) }
-            }
-            wrapper
-        } else if std::arch::is_x86_feature_detected!("sse3") {
-            fn wrapper(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
-                unsafe { crate::fir::sse::convolve_sse3(input, coeffs, taps) }
-            }
-            wrapper
-        } else if std::arch::is_x86_feature_detected!("sse") {
-            fn wrapper(input: &[f32], coeffs: &[f32], taps: usize) -> f32 {
-                unsafe { crate::fir::sse::convolve_sse(input, coeffs, taps) }
+        } else if std::arch::is_x86_feature_detected!("sse4.2") {
+            fn wrapper(
+                input: &[f32],
+                coeffs1: &[f32],
+                coeffs2: &[f32],
+                frac: f32,
+                taps: usize,
+            ) -> f32 {
+                unsafe {
+                    crate::fir::sse4_2::convolve_interp_sse4_2(input, coeffs1, coeffs2, frac, taps)
+                }
             }
             wrapper
         } else {
-            crate::fir::convolve_scalar
+            // SSE2 is always available.
+            fn wrapper(
+                input: &[f32],
+                coeffs1: &[f32],
+                coeffs2: &[f32],
+                frac: f32,
+                taps: usize,
+            ) -> f32 {
+                unsafe {
+                    crate::fir::sse2::convolve_interp_sse2(input, coeffs1, coeffs2, frac, taps)
+                }
+            }
+            wrapper
         };
 
         ResamplerFir {
@@ -301,7 +331,7 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
             #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
             convolve_function,
             #[cfg(any(not(target_arch = "x86_64"), feature = "no_std"))]
-            convolve_function: crate::fir::convolve,
+            convolve_function: crate::fir::convolve_interp,
         }
     }
 
@@ -474,10 +504,13 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
                 let phase2_start = phase2 * self.taps;
                 let coeffs_phase2 = &self.coeffs[phase2_start..phase2_start + self.taps];
 
-                let sample1 = (self.convolve_function)(input_slice, coeffs_phase1, self.taps);
-                let sample2 = (self.convolve_function)(input_slice, coeffs_phase2, self.taps);
-
-                let sample = sample1 * (1.0 - frac) + sample2 * frac;
+                let sample = (self.convolve_function)(
+                    input_slice,
+                    coeffs_phase1,
+                    coeffs_phase2,
+                    frac,
+                    self.taps,
+                );
                 output[output_frame_count * CHANNEL + channel] = sample;
             }
 
@@ -555,7 +588,7 @@ mod tests {
 
         // Prepare output and scratchpad buffers.
         let mut output_buffer = vec![crate::fft::Complex32::zero(); fft_size / 2 + 1];
-        let mut scratchpad = vec![crate::fft::Complex32::zero(); fft_size];
+        let mut scratchpad = vec![crate::fft::Complex32::zero(); fft.scratchpad_size()];
 
         // Compute FFT.
         fft.process(&input_buffer, &mut output_buffer, &mut scratchpad);

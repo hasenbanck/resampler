@@ -156,7 +156,7 @@ mod tests {
         assert_approx_f64(bessel_i0(1.0), 1.266065877752008);
         assert_approx_f64(bessel_i0(2.0), 2.279585302336067);
         assert_approx_f64(bessel_i0(5.0), 27.239871823604442);
-        assert_approx_f64(bessel_i0(10.0), 2815.716628466253951);
+        assert_approx_f64(bessel_i0(10.0), 2815.716628466254);
     }
 
     #[test]

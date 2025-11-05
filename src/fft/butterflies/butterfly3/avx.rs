@@ -1,261 +1,300 @@
-#[cfg(any(test, not(feature = "no_std"), target_feature = "avx"))]
-use crate::Complex32;
+use super::SQRT3_2;
+use crate::fft::Complex32;
 
-/// AVX implementation: processes 4 columns at once.
-#[cfg(any(
-    test,
-    not(feature = "no_std"),
-    all(target_feature = "avx", not(target_feature = "fma"))
-))]
-#[target_feature(enable = "avx")]
-pub(super) unsafe fn butterfly_3_avx(
-    data: &mut [Complex32],
+/// Performs a single radix-3 Stockham butterfly stage (out-of-place, AVX+FMA) for stride=1 (first stage).
+#[target_feature(enable = "avx,fma")]
+pub(super) unsafe fn butterfly_radix3_stride1_avx_fma(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
 ) {
     use core::arch::x86_64::*;
 
+    let samples = src.len();
+    let third_samples = samples / 3;
+    let simd_iters = (third_samples >> 2) << 2;
+
     unsafe {
-        let simd_cols = ((num_columns - start_col) / 4) * 4;
+        let half_vec = _mm256_set1_ps(0.5);
 
-        // Broadcast W3 constants for SIMD operations.
-        let w3_1_re = _mm256_set1_ps(super::W3_1_RE);
-        let w3_1_im = _mm256_set1_ps(super::W3_1_IM);
-        let w3_2_re = _mm256_set1_ps(super::W3_2_RE);
-        let w3_2_im = _mm256_set1_ps(super::W3_2_IM);
+        for i in (0..simd_iters).step_by(4) {
+            let z0_ptr = src.as_ptr().add(i) as *const f32;
+            let z0 = _mm256_loadu_ps(z0_ptr);
 
-        for idx in (start_col..start_col + simd_cols).step_by(4) {
-            // Load 4 complex numbers from each row.
-            // Layout: [x0[0].re, x0[0].im, x0[1].re, x0[1].im, x0[2].re, x0[2].im, x0[3].re, x0[3].im]
-            let x0_ptr = data.as_ptr().add(idx) as *const f32;
-            let x0 = _mm256_loadu_ps(x0_ptr);
+            let z1_ptr = src.as_ptr().add(i + third_samples) as *const f32;
+            let z1 = _mm256_loadu_ps(z1_ptr);
 
-            let x1_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
-            let x1 = _mm256_loadu_ps(x1_ptr);
+            let z2_ptr = src.as_ptr().add(i + third_samples * 2) as *const f32;
+            let z2 = _mm256_loadu_ps(z2_ptr);
 
-            let x2_ptr = data.as_ptr().add(idx + 2 * num_columns) as *const f32;
-            let x2 = _mm256_loadu_ps(x2_ptr);
+            // Load 8 twiddles contiguously.
+            let tw_ptr = stage_twiddles.as_ptr().add(i * 2) as *const f32;
+            let tw0 = _mm256_loadu_ps(tw_ptr); // w1[0], w2[0], w1[1], w2[1]
+            let tw1 = _mm256_loadu_ps(tw_ptr.add(8)); // w1[2], w2[2], w1[3], w2[3]
 
-            // Load 8 twiddle factors: w1[0], w2[0], w1[1], w2[1], w1[2], w2[2], w1[3], w2[3]
-            // Layout: [w1[0].re, w1[0].im, w2[0].re, w2[0].im, w1[1].re, w1[1].im, w2[1].re, w2[1].im]
-            let tw1_ptr = stage_twiddles.as_ptr().add(idx * 2) as *const f32;
-            let tw_0 = _mm256_loadu_ps(tw1_ptr);
-            // Layout: [w1[2].re, w1[2].im, w2[2].re, w2[2].im, w1[3].re, w1[3].im, w2[3].re, w2[3].im]
-            let tw_1 = _mm256_loadu_ps(tw1_ptr.add(8));
-
-            // Extract w1 and w2 for all 4 columns.
-            // tw_0 = [w1[0], w2[0] | w1[1], w2[1]]
-            // tw_1 = [w1[2], w2[2] | w1[3], w2[3]]
-            // Step 1: Use permute2f128 to group alternating columns
-            // temp_0_low = [w1[0], w2[0] | w1[2], w2[2]]
-            let temp_0_low = _mm256_permute2f128_ps(tw_0, tw_1, 0x20);
-            // temp_0_high = [w1[1], w2[1] | w1[3], w2[3]]
-            let temp_0_high = _mm256_permute2f128_ps(tw_0, tw_1, 0x31);
-
-            // Step 2: Shuffle to extract w1 and w2
-            // w1 = [w1[0].re, w1[0].im, w1[1].re, w1[1].im, w1[2].re, w1[2].im, w1[3].re, w1[3].im]
+            // Extract w1 and w2 from contiguous loads.
+            let temp_0_low = _mm256_permute2f128_ps(tw0, tw1, 0x20);
+            let temp_0_high = _mm256_permute2f128_ps(tw0, tw1, 0x31);
             let w1 = _mm256_shuffle_ps(temp_0_low, temp_0_high, 0b01_00_01_00);
-            // w2 = [w2[0].re, w2[0].im, w2[1].re, w2[1].im, w2[2].re, w2[2].im, w2[3].re, w2[3].im]
             let w2 = _mm256_shuffle_ps(temp_0_low, temp_0_high, 0b11_10_11_10);
 
-            // Complex multiply: t1 = x1 * w1
-            let w1_re = _mm256_shuffle_ps(w1, w1, 0b10_10_00_00);
-            let w1_im = _mm256_shuffle_ps(w1, w1, 0b11_11_01_01);
-            let prod_re = _mm256_mul_ps(w1_re, x1);
-            let x1_swap = _mm256_shuffle_ps(x1, x1, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w1_im, x1_swap);
+            // Complex multiply: t1 = w1 * z1
+            let z1_re = _mm256_moveldup_ps(z1);
+            let z1_im = _mm256_movehdup_ps(z1);
+            let w1_swap = _mm256_permute_ps(w1, 0b10_11_00_01);
+            let prod1_im = _mm256_mul_ps(w1_swap, z1_im);
+            let t1 = _mm256_fmaddsub_ps(w1, z1_re, prod1_im);
 
-            // Use AVX addsub for complex multiply.
-            let t1 = _mm256_addsub_ps(prod_re, prod_im);
+            // Complex multiply: t2 = w2 * z2
+            let z2_re = _mm256_moveldup_ps(z2);
+            let z2_im = _mm256_movehdup_ps(z2);
+            let w2_swap = _mm256_permute_ps(w2, 0b10_11_00_01);
+            let prod2_im = _mm256_mul_ps(w2_swap, z2_im);
+            let t2 = _mm256_fmaddsub_ps(w2, z2_re, prod2_im);
 
-            // Complex multiply: t2 = x2 * w2
-            let w2_re = _mm256_shuffle_ps(w2, w2, 0b10_10_00_00);
-            let w2_im = _mm256_shuffle_ps(w2, w2, 0b11_11_01_01);
-            let prod_re = _mm256_mul_ps(w2_re, x2);
-            let x2_swap = _mm256_shuffle_ps(x2, x2, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w2_im, x2_swap);
-            let t2 = _mm256_addsub_ps(prod_re, prod_im);
+            // sum_t = t1 + t2, diff_t = t1 - t2
+            let sum_t = _mm256_add_ps(t1, t2);
+            let diff_t = _mm256_sub_ps(t1, t2);
 
-            // Y0 = x0 + t1 + t2
-            let y0 = _mm256_add_ps(_mm256_add_ps(x0, t1), t2);
+            // out0 = z0 + sum_t
+            let out0 = _mm256_add_ps(z0, sum_t);
 
-            // Y1 = x0 + t1*W_3^1 + t2*W_3^2
-            // t1*W_3^1: complex multiply t1 by (super::W3_1_RE, super::W3_1_IM)
-            let t1_re = _mm256_shuffle_ps(t1, t1, 0b10_10_00_00);
-            let t1_im = _mm256_shuffle_ps(t1, t1, 0b11_11_01_01);
-            let t1w31_re =
-                _mm256_sub_ps(_mm256_mul_ps(t1_re, w3_1_re), _mm256_mul_ps(t1_im, w3_1_im));
-            let t1w31_im =
-                _mm256_add_ps(_mm256_mul_ps(t1_re, w3_1_im), _mm256_mul_ps(t1_im, w3_1_re));
+            // re_part = z0 - 0.5 * sum_t
+            let half_sum_t = _mm256_mul_ps(sum_t, half_vec);
+            let re_im_part = _mm256_sub_ps(z0, half_sum_t);
 
-            // Interleave real and imaginary parts
-            let t1_w31_lo = _mm256_unpacklo_ps(t1w31_re, t1w31_im);
-            let t1_w31_hi = _mm256_unpackhi_ps(t1w31_re, t1w31_im);
-            let t1_w31 = _mm256_shuffle_ps(t1_w31_lo, t1_w31_hi, 0b01_00_01_00);
+            // sqrt3 multiplication
+            let diff_t_swap = _mm256_shuffle_ps(diff_t, diff_t, 0b10_11_00_01);
+            let sqrt3_diff = _mm256_mul_ps(
+                diff_t_swap,
+                _mm256_set_ps(
+                    -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2,
+                ),
+            );
 
-            // t2*W_3^2: complex multiply t2 by (super::W3_2_RE, super::W3_2_IM)
-            let t2_re = _mm256_shuffle_ps(t2, t2, 0b10_10_00_00);
-            let t2_im = _mm256_shuffle_ps(t2, t2, 0b11_11_01_01);
-            let t2w32_re =
-                _mm256_sub_ps(_mm256_mul_ps(t2_re, w3_2_re), _mm256_mul_ps(t2_im, w3_2_im));
-            let t2w32_im =
-                _mm256_add_ps(_mm256_mul_ps(t2_re, w3_2_im), _mm256_mul_ps(t2_im, w3_2_re));
+            let out1 = _mm256_add_ps(re_im_part, sqrt3_diff);
+            let out2 = _mm256_sub_ps(re_im_part, sqrt3_diff);
 
-            let t2_w32_lo = _mm256_unpacklo_ps(t2w32_re, t2w32_im);
-            let t2_w32_hi = _mm256_unpackhi_ps(t2w32_re, t2w32_im);
-            let t2_w32 = _mm256_shuffle_ps(t2_w32_lo, t2_w32_hi, 0b01_00_01_00);
+            // Interleave for sequential stores: [out0[0], out1[0], out2[0], out0[1], ...]
+            let out0_pd = _mm256_castps_pd(out0);
+            let out1_pd = _mm256_castps_pd(out1);
+            let out2_pd = _mm256_castps_pd(out2);
 
-            let y1 = _mm256_add_ps(_mm256_add_ps(x0, t1_w31), t2_w32);
+            // Extract 128-bit lanes (each containing 2 complex numbers).
+            let out0_lo = _mm256_castpd256_pd128(out0_pd);
+            let out0_hi = _mm256_extractf128_pd(out0_pd, 1);
+            let out1_lo = _mm256_castpd256_pd128(out1_pd);
+            let out1_hi = _mm256_extractf128_pd(out1_pd, 1);
+            let out2_lo = _mm256_castpd256_pd128(out2_pd);
+            let out2_hi = _mm256_extractf128_pd(out2_pd, 1);
 
-            // Y2 = x0 + t1*W_3^2 + t2*W_3^1
-            // t1*W_3^2: complex multiply t1 by (super::W3_2_RE, super::W3_2_IM)
-            let t1w32_re =
-                _mm256_sub_ps(_mm256_mul_ps(t1_re, w3_2_re), _mm256_mul_ps(t1_im, w3_2_im));
-            let t1w32_im =
-                _mm256_add_ps(_mm256_mul_ps(t1_re, w3_2_im), _mm256_mul_ps(t1_im, w3_2_re));
+            // Build result0: [out0[0], out1[0], out2[0], out0[1]]
+            let temp0_lo = _mm_unpacklo_pd(out0_lo, out1_lo); // [out0[0], out1[0]]
+            let temp0_hi = _mm_shuffle_pd::<2>(out2_lo, out0_lo); // [out2[0], out0[1]]
+            let result0 = _mm256_castpd_ps(_mm256_set_m128d(temp0_hi, temp0_lo));
 
-            let t1_w32_lo = _mm256_unpacklo_ps(t1w32_re, t1w32_im);
-            let t1_w32_hi = _mm256_unpackhi_ps(t1w32_re, t1w32_im);
-            let t1_w32 = _mm256_shuffle_ps(t1_w32_lo, t1_w32_hi, 0b01_00_01_00);
+            // Build result1: [out1[1], out2[1], out0[2], out1[2]]
+            let temp1_lo = _mm_unpackhi_pd(out1_lo, out2_lo); // [out1[1], out2[1]]
+            let temp1_hi = _mm_unpacklo_pd(out0_hi, out1_hi); // [out0[2], out1[2]]
+            let result1 = _mm256_castpd_ps(_mm256_set_m128d(temp1_hi, temp1_lo));
 
-            // t2*W_3^1: complex multiply t2 by (super::W3_1_RE, super::W3_1_IM)
-            let t2w31_re =
-                _mm256_sub_ps(_mm256_mul_ps(t2_re, w3_1_re), _mm256_mul_ps(t2_im, w3_1_im));
-            let t2w31_im =
-                _mm256_add_ps(_mm256_mul_ps(t2_re, w3_1_im), _mm256_mul_ps(t2_im, w3_1_re));
+            // Build result2: [out2[2], out0[3], out1[3], out2[3]]
+            let temp2_lo = _mm_shuffle_pd::<2>(out2_hi, out0_hi); // [out2[2], out0[3]]
+            let temp2_hi = _mm_unpackhi_pd(out1_hi, out2_hi); // [out1[3], out2[3]]
+            let result2 = _mm256_castpd_ps(_mm256_set_m128d(temp2_hi, temp2_lo));
 
-            let t2_w31_lo = _mm256_unpacklo_ps(t2w31_re, t2w31_im);
-            let t2_w31_hi = _mm256_unpackhi_ps(t2w31_re, t2w31_im);
-            let t2_w31 = _mm256_shuffle_ps(t2_w31_lo, t2_w31_hi, 0b01_00_01_00);
-
-            let y2 = _mm256_add_ps(_mm256_add_ps(x0, t1_w32), t2_w31);
-
-            let y0_ptr = data.as_mut_ptr().add(idx) as *mut f32;
-            _mm256_storeu_ps(y0_ptr, y0);
-            let y1_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
-            _mm256_storeu_ps(y1_ptr, y1);
-            let y2_ptr = data.as_mut_ptr().add(idx + 2 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y2_ptr, y2);
+            // Sequential stores.
+            let j = 3 * i;
+            let dst_ptr = dst.as_mut_ptr().add(j) as *mut f32;
+            _mm256_storeu_ps(dst_ptr, result0);
+            _mm256_storeu_ps(dst_ptr.add(8), result1);
+            _mm256_storeu_ps(dst_ptr.add(16), result2);
         }
+    }
 
-        super::butterfly_3_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
+    for i in simd_iters..third_samples {
+        let w1 = stage_twiddles[i * 2];
+        let w2 = stage_twiddles[i * 2 + 1];
+
+        let z0 = src[i];
+        let z1 = src[i + third_samples];
+        let z2 = src[i + third_samples * 2];
+
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+
+        let sum_t = t1.add(&t2);
+        let diff_t = t1.sub(&t2);
+
+        let j = 3 * i;
+        dst[j] = z0.add(&sum_t);
+
+        let re_part = z0.re - 0.5 * sum_t.re;
+        let im_part = z0.im - 0.5 * sum_t.im;
+        let sqrt3_diff_re = SQRT3_2 * diff_t.im;
+        let sqrt3_diff_im = -SQRT3_2 * diff_t.re;
+
+        dst[j + 1] = Complex32::new(re_part + sqrt3_diff_re, im_part + sqrt3_diff_im);
+        dst[j + 2] = Complex32::new(re_part - sqrt3_diff_re, im_part - sqrt3_diff_im);
     }
 }
 
-/// AVX+FMA implementation: processes 4 columns at once using fused multiply-add.
-#[cfg(any(
-    not(feature = "no_std"),
-    all(target_feature = "avx", target_feature = "fma")
-))]
+/// Performs a single radix-3 Stockham butterfly stage (out-of-place, AVX+FMA) for generic p.
 #[target_feature(enable = "avx,fma")]
-pub(super) unsafe fn butterfly_3_avx_fma(
-    data: &mut [Complex32],
+pub(super) unsafe fn butterfly_radix3_generic_avx_fma(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
+    stride: usize,
 ) {
     use core::arch::x86_64::*;
 
+    let samples = src.len();
+    let third_samples = samples / 3;
+    let simd_iters = (third_samples >> 2) << 2;
+
     unsafe {
-        let simd_cols = ((num_columns - start_col) / 4) * 4;
+        let half_vec = _mm256_set1_ps(0.5);
 
-        // Broadcast W3 constants for SIMD operations.
-        let w3_1_re = _mm256_set1_ps(super::W3_1_RE);
-        let w3_1_im = _mm256_set1_ps(super::W3_1_IM);
-        let w3_2_re = _mm256_set1_ps(super::W3_2_RE);
-        let w3_2_im = _mm256_set1_ps(super::W3_2_IM);
+        for i in (0..simd_iters).step_by(4) {
+            let k0 = i % stride;
+            let k1 = (i + 1) % stride;
+            let k2 = (i + 2) % stride;
+            let k3 = (i + 3) % stride;
 
-        for idx in (start_col..start_col + simd_cols).step_by(4) {
-            // Load 4 complex numbers from each row.
-            let x0_ptr = data.as_ptr().add(idx) as *const f32;
-            let x0 = _mm256_loadu_ps(x0_ptr);
+            // Load z0
+            let z0_ptr = src.as_ptr().add(i) as *const f32;
+            let z0 = _mm256_loadu_ps(z0_ptr);
 
-            let x1_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
-            let x1 = _mm256_loadu_ps(x1_ptr);
+            // Load z1, z2
+            let z1_ptr = src.as_ptr().add(i + third_samples) as *const f32;
+            let z1 = _mm256_loadu_ps(z1_ptr);
 
-            let x2_ptr = data.as_ptr().add(idx + 2 * num_columns) as *const f32;
-            let x2 = _mm256_loadu_ps(x2_ptr);
+            let z2_ptr = src.as_ptr().add(i + third_samples * 2) as *const f32;
+            let z2 = _mm256_loadu_ps(z2_ptr);
 
-            // Load 8 twiddle factors.
-            let tw1_ptr = stage_twiddles.as_ptr().add(idx * 2) as *const f32;
-            let tw_0 = _mm256_loadu_ps(tw1_ptr);
-            let tw_1 = _mm256_loadu_ps(tw1_ptr.add(8));
+            // Load 8 twiddles contiguously.
+            let tw_ptr = stage_twiddles.as_ptr().add(i * 2) as *const f32;
+            let tw0 = _mm256_loadu_ps(tw_ptr); // w1[0], w2[0], w1[1], w2[1]
+            let tw1 = _mm256_loadu_ps(tw_ptr.add(8)); // w1[2], w2[2], w1[3], w2[3]
 
-            // Extract w1 and w2 for all 4 columns.
-            let temp_0_low = _mm256_permute2f128_ps(tw_0, tw_1, 0x20);
-            let temp_0_high = _mm256_permute2f128_ps(tw_0, tw_1, 0x31);
-
+            // Extract w1 and w2 from contiguous loads.
+            // tw0 = [w1[0], w2[0] | w1[1], w2[1]]
+            // tw1 = [w1[2], w2[2] | w1[3], w2[3]]
+            let temp_0_low = _mm256_permute2f128_ps(tw0, tw1, 0x20);
+            let temp_0_high = _mm256_permute2f128_ps(tw0, tw1, 0x31);
             let w1 = _mm256_shuffle_ps(temp_0_low, temp_0_high, 0b01_00_01_00);
             let w2 = _mm256_shuffle_ps(temp_0_low, temp_0_high, 0b11_10_11_10);
 
-            // Complex multiply using FMA: t1 = x1 * w1
-            let w1_re = _mm256_shuffle_ps(w1, w1, 0b10_10_00_00);
-            let w1_im = _mm256_shuffle_ps(w1, w1, 0b11_11_01_01);
-            let x1_swap = _mm256_shuffle_ps(x1, x1, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w1_im, x1_swap);
-            let t1 = _mm256_fmaddsub_ps(w1_re, x1, prod_im);
+            // Complex multiply: t1 = w1 * z1
+            let z1_re = _mm256_moveldup_ps(z1);
+            let z1_im = _mm256_movehdup_ps(z1);
+            let w1_swap = _mm256_permute_ps(w1, 0b10_11_00_01);
+            let prod1_im = _mm256_mul_ps(w1_swap, z1_im);
+            let t1 = _mm256_fmaddsub_ps(w1, z1_re, prod1_im);
 
-            // Complex multiply using FMA: t2 = x2 * w2
-            let w2_re = _mm256_shuffle_ps(w2, w2, 0b10_10_00_00);
-            let w2_im = _mm256_shuffle_ps(w2, w2, 0b11_11_01_01);
-            let x2_swap = _mm256_shuffle_ps(x2, x2, 0b10_11_00_01);
-            let prod_im = _mm256_mul_ps(w2_im, x2_swap);
-            let t2 = _mm256_fmaddsub_ps(w2_re, x2, prod_im);
+            // Complex multiply: t2 = w2 * z2
+            let z2_re = _mm256_moveldup_ps(z2);
+            let z2_im = _mm256_movehdup_ps(z2);
+            let w2_swap = _mm256_permute_ps(w2, 0b10_11_00_01);
+            let prod2_im = _mm256_mul_ps(w2_swap, z2_im);
+            let t2 = _mm256_fmaddsub_ps(w2, z2_re, prod2_im);
 
-            // Y0 = x0 + t1 + t2
-            let y0 = _mm256_add_ps(_mm256_add_ps(x0, t1), t2);
+            // sum_t = t1 + t2, diff_t = t1 - t2
+            let sum_t = _mm256_add_ps(t1, t2);
+            let diff_t = _mm256_sub_ps(t1, t2);
 
-            // Y1 = x0 + t1*W_3^1 + t2*W_3^2
-            // t1*W_3^1: complex multiply using FMA
-            let t1_re = _mm256_shuffle_ps(t1, t1, 0b10_10_00_00);
-            let t1_im = _mm256_shuffle_ps(t1, t1, 0b11_11_01_01);
-            let t1w31_re = _mm256_fmsub_ps(t1_re, w3_1_re, _mm256_mul_ps(t1_im, w3_1_im));
-            let t1w31_im = _mm256_fmadd_ps(t1_re, w3_1_im, _mm256_mul_ps(t1_im, w3_1_re));
+            // out0 = z0 + sum_t
+            let out0 = _mm256_add_ps(z0, sum_t);
 
-            let t1_w31_lo = _mm256_unpacklo_ps(t1w31_re, t1w31_im);
-            let t1_w31_hi = _mm256_unpackhi_ps(t1w31_re, t1w31_im);
-            let t1_w31 = _mm256_shuffle_ps(t1_w31_lo, t1_w31_hi, 0b01_00_01_00);
+            // re_part = z0 - 0.5 * sum_t
+            let half_sum_t = _mm256_mul_ps(sum_t, half_vec);
+            let re_im_part = _mm256_sub_ps(z0, half_sum_t);
 
-            // t2*W_3^2: complex multiply using FMA
-            let t2_re = _mm256_shuffle_ps(t2, t2, 0b10_10_00_00);
-            let t2_im = _mm256_shuffle_ps(t2, t2, 0b11_11_01_01);
-            let t2w32_re = _mm256_fmsub_ps(t2_re, w3_2_re, _mm256_mul_ps(t2_im, w3_2_im));
-            let t2w32_im = _mm256_fmadd_ps(t2_re, w3_2_im, _mm256_mul_ps(t2_im, w3_2_re));
+            // Extract real and imaginary parts separately for sqrt3 multiplication.
+            // diff_t contains [re0, im0, re1, im1, re2, im2, re3, im3]
+            // We need sqrt3_diff = SQRT3_2 * diff_t.im + i * (-SQRT3_2 * diff_t.re)
+            //                    = SQRT3_2 * [im, -re]
 
-            let t2_w32_lo = _mm256_unpacklo_ps(t2w32_re, t2w32_im);
-            let t2_w32_hi = _mm256_unpackhi_ps(t2w32_re, t2w32_im);
-            let t2_w32 = _mm256_shuffle_ps(t2_w32_lo, t2_w32_hi, 0b01_00_01_00);
+            // Swap and multiply by sqrt3_2.
+            // diff_t_swap has [im, re, ...], we want [SQRT3_2 * im, -SQRT3_2 * re, ...]
+            let diff_t_swap = _mm256_shuffle_ps(diff_t, diff_t, 0b10_11_00_01);
+            let sqrt3_diff = _mm256_mul_ps(
+                diff_t_swap,
+                _mm256_set_ps(
+                    -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2,
+                ),
+            );
 
-            let y1 = _mm256_add_ps(_mm256_add_ps(x0, t1_w31), t2_w32);
+            let out1 = _mm256_add_ps(re_im_part, sqrt3_diff);
+            let out2 = _mm256_sub_ps(re_im_part, sqrt3_diff);
 
-            // Y2 = x0 + t1*W_3^2 + t2*W_3^1
-            // t1*W_3^2: complex multiply using FMA
-            let t1w32_re = _mm256_fmsub_ps(t1_re, w3_2_re, _mm256_mul_ps(t1_im, w3_2_im));
-            let t1w32_im = _mm256_fmadd_ps(t1_re, w3_2_im, _mm256_mul_ps(t1_im, w3_2_re));
+            // Calculate output indices.
+            let j0 = 3 * i - 2 * k0;
+            let j1 = 3 * (i + 1) - 2 * k1;
+            let j2 = 3 * (i + 2) - 2 * k2;
+            let j3 = 3 * (i + 3) - 2 * k3;
 
-            let t1_w32_lo = _mm256_unpacklo_ps(t1w32_re, t1w32_im);
-            let t1_w32_hi = _mm256_unpackhi_ps(t1w32_re, t1w32_im);
-            let t1_w32 = _mm256_shuffle_ps(t1_w32_lo, t1_w32_hi, 0b01_00_01_00);
+            // Direct SIMD stores (no stack spills)
+            let out0_pd = _mm256_castps_pd(out0);
+            let out1_pd = _mm256_castps_pd(out1);
+            let out2_pd = _mm256_castps_pd(out2);
 
-            // t2*W_3^1: complex multiply using FMA
-            let t2w31_re = _mm256_fmsub_ps(t2_re, w3_1_re, _mm256_mul_ps(t2_im, w3_1_im));
-            let t2w31_im = _mm256_fmadd_ps(t2_re, w3_1_im, _mm256_mul_ps(t2_im, w3_1_re));
+            let out0_lo = _mm256_castpd256_pd128(out0_pd);
+            let out0_hi = _mm256_extractf128_pd(out0_pd, 1);
+            let out1_lo = _mm256_castpd256_pd128(out1_pd);
+            let out1_hi = _mm256_extractf128_pd(out1_pd, 1);
+            let out2_lo = _mm256_castpd256_pd128(out2_pd);
+            let out2_hi = _mm256_extractf128_pd(out2_pd, 1);
 
-            let t2_w31_lo = _mm256_unpacklo_ps(t2w31_re, t2w31_im);
-            let t2_w31_hi = _mm256_unpackhi_ps(t2w31_re, t2w31_im);
-            let t2_w31 = _mm256_shuffle_ps(t2_w31_lo, t2_w31_hi, 0b01_00_01_00);
+            let dst_ptr = dst.as_mut_ptr() as *mut f64;
 
-            let y2 = _mm256_add_ps(_mm256_add_ps(x0, t1_w32), t2_w31);
+            // Store iteration 0
+            _mm_storel_pd(dst_ptr.add(j0), out0_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride), out1_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 2), out2_lo);
 
-            let y0_ptr = data.as_mut_ptr().add(idx) as *mut f32;
-            _mm256_storeu_ps(y0_ptr, y0);
-            let y1_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
-            _mm256_storeu_ps(y1_ptr, y1);
-            let y2_ptr = data.as_mut_ptr().add(idx + 2 * num_columns) as *mut f32;
-            _mm256_storeu_ps(y2_ptr, y2);
+            // Store iteration 1
+            _mm_storeh_pd(dst_ptr.add(j1), out0_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride), out1_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 2), out2_lo);
+
+            // Store iteration 2
+            _mm_storel_pd(dst_ptr.add(j2), out0_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride), out1_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 2), out2_hi);
+
+            // Store iteration 3
+            _mm_storeh_pd(dst_ptr.add(j3), out0_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride), out1_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 2), out2_hi);
         }
+    }
 
-        super::butterfly_3_scalar(data, stage_twiddles, start_col + simd_cols, num_columns)
+    for i in simd_iters..third_samples {
+        let k = i % stride;
+        let w1 = stage_twiddles[i * 2];
+        let w2 = stage_twiddles[i * 2 + 1];
+
+        let z0 = src[i];
+        let z1 = src[i + third_samples];
+        let z2 = src[i + third_samples * 2];
+
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+
+        let sum_t = t1.add(&t2);
+        let diff_t = t1.sub(&t2);
+
+        let j = 3 * i - 2 * k;
+        dst[j] = z0.add(&sum_t);
+
+        let re_part = z0.re - 0.5 * sum_t.re;
+        let im_part = z0.im - 0.5 * sum_t.im;
+        let sqrt3_diff_re = SQRT3_2 * diff_t.im;
+        let sqrt3_diff_im = -SQRT3_2 * diff_t.re;
+
+        dst[j + stride] = Complex32::new(re_part + sqrt3_diff_re, im_part + sqrt3_diff_im);
+        dst[j + stride * 2] = Complex32::new(re_part - sqrt3_diff_re, im_part - sqrt3_diff_im);
     }
 }

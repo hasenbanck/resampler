@@ -1,8 +1,6 @@
-#[cfg(target_arch = "aarch64")]
 use crate::Complex32;
 
 /// Postprocess FFT output for real-valued FFT using NEON SIMD.
-#[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub(crate) unsafe fn postprocess_fft_neon(
     output_left_middle: &mut [Complex32],
@@ -24,9 +22,9 @@ pub(crate) unsafe fn postprocess_fft_neon(
             let out_left_ptr = output_left_middle.as_ptr().add(i) as *const f32;
             let out_left = vld1q_f32(out_left_ptr);
 
-            let out_rev0 = output_right_middle[rev_idx0];
-            let out_rev1 = output_right_middle[rev_idx1];
-            let out_rev = vld1q_f32([out_rev0.re, out_rev0.im, out_rev1.re, out_rev1.im].as_ptr());
+            let low = vld1_f32(&output_right_middle[rev_idx0] as *const Complex32 as *const f32);
+            let high = vld1_f32(&output_right_middle[rev_idx1] as *const Complex32 as *const f32);
+            let out_rev = vcombine_f32(low, high);
 
             let tw_ptr = twiddles.as_ptr().add(i) as *const f32;
             let tw = vld1q_f32(tw_ptr);
@@ -71,15 +69,12 @@ pub(crate) unsafe fn postprocess_fft_neon(
             let out_left_ptr_mut = output_left_middle.as_mut_ptr().add(i) as *mut f32;
             vst1q_f32(out_left_ptr_mut, left_output.0);
 
-            let right_vals: [f32; 4] = core::mem::transmute(right_output.0);
-            output_right_middle[rev_idx0] = Complex32 {
-                re: right_vals[0],
-                im: right_vals[1],
-            };
-            output_right_middle[rev_idx1] = Complex32 {
-                re: right_vals[2],
-                im: right_vals[3],
-            };
+            let right_low = vget_low_f32(right_output.0);
+            let right_high = vget_high_f32(right_output.0);
+            let out_rev0_ptr_mut = output_right_middle.as_mut_ptr().add(rev_idx0) as *mut f32;
+            let out_rev1_ptr_mut = output_right_middle.as_mut_ptr().add(rev_idx1) as *mut f32;
+            vst1_f32(out_rev0_ptr_mut, right_low);
+            vst1_f32(out_rev1_ptr_mut, right_high);
         }
 
         for i in simd_len..len {
@@ -108,7 +103,6 @@ pub(crate) unsafe fn postprocess_fft_neon(
 }
 
 /// Preprocess IFFT input for real-valued IFFT using NEON SIMD.
-#[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub(crate) unsafe fn preprocess_ifft_neon(
     input_left_middle: &mut [Complex32],
@@ -121,7 +115,7 @@ pub(crate) unsafe fn preprocess_ifft_neon(
         let len = input_left_middle.len();
         let right_len = input_right_middle.len();
 
-        let simd_len = len / 2 * 2; // Process in pairs of 2
+        let simd_len = len / 2 * 2;
 
         for i in (0..simd_len).step_by(2) {
             let rev_idx0 = right_len - 1 - i;
@@ -130,9 +124,9 @@ pub(crate) unsafe fn preprocess_ifft_neon(
             let inp_left_ptr = input_left_middle.as_ptr().add(i) as *const f32;
             let inp_left = vld1q_f32(inp_left_ptr);
 
-            let inp_rev0 = input_right_middle[rev_idx0];
-            let inp_rev1 = input_right_middle[rev_idx1];
-            let inp_rev = vld1q_f32([inp_rev0.re, inp_rev0.im, inp_rev1.re, inp_rev1.im].as_ptr());
+            let low = vld1_f32(input_right_middle.as_ptr().add(rev_idx0) as *const f32);
+            let high = vld1_f32(input_right_middle.as_ptr().add(rev_idx1) as *const f32);
+            let inp_rev = vcombine_f32(low, high);
 
             let tw_ptr = twiddles.as_ptr().add(i) as *const f32;
             let tw = vld1q_f32(tw_ptr);
@@ -174,15 +168,12 @@ pub(crate) unsafe fn preprocess_ifft_neon(
             let inp_left_ptr_mut = input_left_middle.as_mut_ptr().add(i) as *mut f32;
             vst1q_f32(inp_left_ptr_mut, left_output.0);
 
-            let right_vals: [f32; 4] = core::mem::transmute(right_output.0);
-            input_right_middle[rev_idx0] = Complex32 {
-                re: right_vals[0],
-                im: right_vals[1],
-            };
-            input_right_middle[rev_idx1] = Complex32 {
-                re: right_vals[2],
-                im: right_vals[3],
-            };
+            let right_low = vget_low_f32(right_output.0);
+            let right_high = vget_high_f32(right_output.0);
+            let inp_rev0_ptr_mut = input_right_middle.as_mut_ptr().add(rev_idx0) as *mut f32;
+            let inp_rev1_ptr_mut = input_right_middle.as_mut_ptr().add(rev_idx1) as *mut f32;
+            vst1_f32(inp_rev0_ptr_mut, right_low);
+            vst1_f32(inp_rev1_ptr_mut, right_high);
         }
 
         for i in simd_len..len {

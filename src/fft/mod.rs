@@ -1,9 +1,8 @@
-mod butterflies;
-pub(crate) mod cooley_tukey_radix2;
-pub(crate) mod cooley_tukey_radixn;
+pub(crate) mod butterflies;
 pub mod planner;
 mod radix_fft;
 mod real_complex;
+pub(crate) mod stockham_autosort;
 
 pub(crate) use radix_fft::{Forward, Inverse, Radix, RadixFFT};
 

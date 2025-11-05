@@ -1,16 +1,6 @@
-#[cfg(any(
-    test,
-    all(feature = "no_std", not(target_feature = "avx")),
-    all(not(feature = "no_std"), target_feature = "sse2")
-))]
 use crate::fft::Complex32;
 
 /// SSE2 implementation of postprocess_fft.
-#[cfg(any(
-    test,
-    all(feature = "no_std", not(target_feature = "avx")),
-    all(not(feature = "no_std"), target_feature = "sse2")
-))]
 #[target_feature(enable = "sse2")]
 pub(crate) unsafe fn postprocess_fft_sse2(
     output_left_middle: &mut [Complex32],
@@ -104,7 +94,6 @@ pub(crate) unsafe fn postprocess_fft_sse2(
                 Complex32::new(right_vals[2], right_vals[3]);
         }
 
-        // Scalar fallback for remaining elements
         let remaining_start = simd_count * 2;
         for i in remaining_start..iter_count {
             let out = output_left_middle[i];
@@ -136,11 +125,6 @@ pub(crate) unsafe fn postprocess_fft_sse2(
 }
 
 /// SSE2 implementation of preprocess_ifft.
-#[cfg(any(
-    test,
-    all(feature = "no_std", not(target_feature = "avx")),
-    all(not(feature = "no_std"), target_feature = "sse2")
-))]
 #[target_feature(enable = "sse2")]
 pub(crate) unsafe fn preprocess_ifft_sse2(
     input_left_middle: &mut [Complex32],
@@ -228,7 +212,6 @@ pub(crate) unsafe fn preprocess_ifft_sse2(
                 Complex32::new(right_vals[2], right_vals[3]);
         }
 
-        // Scalar fallback for remaining elements
         let remaining_start = simd_count * 2;
         for i in remaining_start..iter_count {
             let inp = input_left_middle[i];

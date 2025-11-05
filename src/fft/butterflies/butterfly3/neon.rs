@@ -1,253 +1,316 @@
-use crate::Complex32;
+use super::SQRT3_2;
+use crate::fft::Complex32;
 
-/// NEON implementation: processes 4 columns at once using vld2q/vst2q.
-#[cfg(target_arch = "aarch64")]
+/// Performs a single radix-3 Stockham butterfly stage for stride=1 (out-of-place, NEON).
+///
+/// This is a specialized version for the stride=1 case (first stage) that uses sequential stores
+/// instead of scattered stores. When stride==1, output indices are sequential: j = 3*i, j+1, j+2.
+/// This provides significant performance benefits through write-combining and better cache utilization.
 #[target_feature(enable = "neon")]
-pub(super) unsafe fn butterfly_3_neon_x4(
-    data: &mut [Complex32],
+pub(super) unsafe fn butterfly_radix3_stride1_neon(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
 ) {
     use core::arch::aarch64::*;
 
+    let samples = src.len();
+    let third_samples = samples / 3;
+    let simd_iters = (third_samples >> 1) << 1;
+
+    // Sign flip mask for complex multiplication: [-0.0, +0.0, -0.0, +0.0].
+    #[repr(align(16))]
+    struct AlignedMask([u32; 4]);
+    const SIGN_FLIP_MASK: AlignedMask =
+        AlignedMask([0x80000000, 0x00000000, 0x80000000, 0x00000000]);
+
+    #[repr(align(16))]
+    struct AlignedPattern([f32; 4]);
+    const SQRT3_PATTERN: AlignedPattern = AlignedPattern([SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2]);
+
     unsafe {
-        let simd_cols = ((num_columns - start_col) / 4) * 4;
+        let sign_flip = vreinterpretq_f32_u32(vld1q_u32(SIGN_FLIP_MASK.0.as_ptr()));
+        let half_vec = vdupq_n_f32(0.5);
+        let sqrt3_signs = vld1q_f32(SQRT3_PATTERN.0.as_ptr());
 
-        // Broadcast W3 constants for SIMD operations.
-        let w3_1_re = vdupq_n_f32(super::W3_1_RE);
-        let w3_1_im = vdupq_n_f32(super::W3_1_IM);
-        let w3_2_re = vdupq_n_f32(super::W3_2_RE);
-        let w3_2_im = vdupq_n_f32(super::W3_2_IM);
+        for i in (0..simd_iters).step_by(2) {
+            // Load z0 from first third (contiguous).
+            let z0_ptr = src.as_ptr().add(i) as *const f32;
+            let z0 = vld1q_f32(z0_ptr);
 
-        for idx in (start_col..start_col + simd_cols).step_by(4) {
-            // Load 4 complex numbers using vld2q (automatically deinterleaves into real/imag)
-            let x0_ptr = data.as_ptr().add(idx) as *const f32;
-            let x0 = vld2q_f32(x0_ptr); // x0.0 = real parts, x0.1 = imag parts
+            // Load z1, z2 from other thirds using contiguous loads.
+            let z1_ptr = src.as_ptr().add(i + third_samples) as *const f32;
+            let z1 = vld1q_f32(z1_ptr);
 
-            let x1_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
-            let x1 = vld2q_f32(x1_ptr);
+            let z2_ptr = src.as_ptr().add(i + third_samples * 2) as *const f32;
+            let z2 = vld1q_f32(z2_ptr);
 
-            let x2_ptr = data.as_ptr().add(idx + 2 * num_columns) as *const f32;
-            let x2 = vld2q_f32(x2_ptr);
+            // Load 4 twiddles contiguously (2 iterations × 2 twiddles each).
+            let tw_ptr = stage_twiddles.as_ptr().add(i * 2) as *const f32;
+            let tw_01 = vld1q_f32(tw_ptr); // w1[0], w2[0]
+            let tw_23 = vld1q_f32(tw_ptr.add(4)); // w1[1], w2[1]
 
-            // Load twiddle factors: 8 complex numbers total (w1[0..3], w2[0..3])
-            // Memory layout: [w1[0], w2[0], w1[1], w2[1], w1[2], w2[2], w1[3], w2[3]]
-            // We need to extract: w1 = [w1[0], w1[1], w1[2], w1[3]], w2 = [w2[0], w2[1], w2[2], w2[3]]
-            let tw_ptr = stage_twiddles.as_ptr().add(idx * 2) as *const f32;
+            // Extract w1 and w2.
+            let w1_low = vget_low_f32(tw_01); // w1[0]
+            let w1_high = vget_low_f32(tw_23); // w1[1]
+            let w1 = vcombine_f32(w1_low, w1_high);
 
-            // Load first 4 twiddle pairs: [w1[0], w2[0], w1[1], w2[1]]
-            let tw_01 = vld2q_f32(tw_ptr); // tw_01.0 = [w1[0].re, w2[0].re, w1[1].re, w2[1].re], tw_01.1 = imag
+            let w2_low = vget_high_f32(tw_01); // w2[0]
+            let w2_high = vget_high_f32(tw_23); // w2[1]
+            let w2 = vcombine_f32(w2_low, w2_high);
 
-            // Load second 4 twiddle pairs: [w1[2], w2[2], w1[3], w2[3]]
-            let tw_23 = vld2q_f32(tw_ptr.add(8)); // tw_23.0 = [w1[2].re, w2[2].re, w1[3].re, w2[3].re], tw_23.1 = imag
+            // Complex multiply: t1 = w1 * z1.
+            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
+            let w1_transposed = vtrnq_f32(w1, w1);
+            let w1_re_dup = w1_transposed.0; // [w1[0].re, w1[0].re, w1[1].re, w1[1].re]
+            let w1_im_dup = w1_transposed.1; // [w1[0].im, w1[0].im, w1[1].im, w1[1].im]
+            let z1_swap = vrev64q_f32(z1);
+            let w1_im_signed = vreinterpretq_f32_u32(veorq_u32(
+                vreinterpretq_u32_f32(w1_im_dup),
+                vreinterpretq_u32_f32(sign_flip),
+            ));
+            let t1 = vmlaq_f32(vmulq_f32(w1_re_dup, z1), w1_im_signed, z1_swap);
 
-            // Extract w1 and w2 by deinterleaving the pairs
-            // vuzpq extracts even/odd indexed elements
-            let tw_01_parts = vuzpq_f32(tw_01.0, tw_01.1); // .0 = [w1[0].re, w1[1].re, w1[0].im, w1[1].im], .1 = [w2[0].re, w2[1].re, w2[0].im, w2[1].im]
-            let tw_23_parts = vuzpq_f32(tw_23.0, tw_23.1);
+            // Complex multiply: t2 = w2 * z2.
+            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
+            let w2_transposed = vtrnq_f32(w2, w2);
+            let w2_re_dup = w2_transposed.0;
+            let w2_im_dup = w2_transposed.1;
+            let z2_swap = vrev64q_f32(z2);
+            let w2_im_signed = vreinterpretq_f32_u32(veorq_u32(
+                vreinterpretq_u32_f32(w2_im_dup),
+                vreinterpretq_u32_f32(sign_flip),
+            ));
+            let t2 = vmlaq_f32(vmulq_f32(w2_re_dup, z2), w2_im_signed, z2_swap);
 
-            // Combine to get w1 and w2
-            let w1_re = vcombine_f32(vget_low_f32(tw_01_parts.0), vget_low_f32(tw_23_parts.0)); // [w1[0].re, w1[1].re, w1[2].re, w1[3].re]
-            let w1_im = vcombine_f32(vget_high_f32(tw_01_parts.0), vget_high_f32(tw_23_parts.0)); // [w1[0].im, w1[1].im, w1[2].im, w1[3].im]
-            let w2_re = vcombine_f32(vget_low_f32(tw_01_parts.1), vget_low_f32(tw_23_parts.1));
-            let w2_im = vcombine_f32(vget_high_f32(tw_01_parts.1), vget_high_f32(tw_23_parts.1));
+            // Radix-3 DFT.
+            // sum_t = t1 + t2, diff_t = t1 - t2
+            let sum_t = vaddq_f32(t1, t2);
+            let diff_t = vsubq_f32(t1, t2);
 
-            // Complex multiply: t1 = x1 * w1
-            // t1.re = w1.re * x1.re - w1.im * x1.im
-            // t1.im = w1.re * x1.im + w1.im * x1.re
-            let t1_re = vmulq_f32(w1_re, x1.0);
-            let t1_re = vmlsq_f32(t1_re, w1_im, x1.1);
+            // out0 = z0 + sum_t
+            let out0 = vaddq_f32(z0, sum_t);
 
-            let t1_im = vmulq_f32(w1_re, x1.1);
-            let t1_im = vmlaq_f32(t1_im, w1_im, x1.0);
+            // re_im_part = z0 - 0.5 * sum_t
+            let half_sum_t = vmulq_f32(sum_t, half_vec);
+            let re_im_part = vsubq_f32(z0, half_sum_t);
 
-            // Complex multiply: t2 = x2 * w2
-            let t2_re = vmulq_f32(w2_re, x2.0);
-            let t2_re = vmlsq_f32(t2_re, w2_im, x2.1);
+            // sqrt3_diff = SQRT3_2 * [diff_t.im, -diff_t.re]
+            let diff_t_swap = vrev64q_f32(diff_t);
+            let sqrt3_diff = vmulq_f32(diff_t_swap, sqrt3_signs);
 
-            let t2_im = vmulq_f32(w2_re, x2.1);
-            let t2_im = vmlaq_f32(t2_im, w2_im, x2.0);
+            let out1 = vaddq_f32(re_im_part, sqrt3_diff);
+            let out2 = vsubq_f32(re_im_part, sqrt3_diff);
 
-            // Y0 = x0 + t1 + t2
-            let y0_re = vaddq_f32(vaddq_f32(x0.0, t1_re), t2_re);
-            let y0_im = vaddq_f32(vaddq_f32(x0.1, t1_im), t2_im);
+            // Sequential stores for stride=1 case.
+            // For iteration i, outputs go to indices [3*i, 3*i+1, 3*i+2]
+            // For iteration i+1, outputs go to indices [3*(i+1), 3*(i+1)+1, 3*(i+1)+2]
+            let j = 3 * i;
+            let dst_ptr = dst.as_mut_ptr() as *mut f32;
 
-            // Y1 = x0 + t1*W_3^1 + t2*W_3^2
-            // t1*W_3^1: complex multiply t1 by (super::W3_1_RE, super::W3_1_IM)
-            let t1w31_re = vmulq_f32(t1_re, w3_1_re);
-            let t1w31_re = vmlsq_f32(t1w31_re, t1_im, w3_1_im);
+            let out0_0 = vget_low_f32(out0);
+            let out1_0 = vget_low_f32(out1);
+            let out2_0 = vget_low_f32(out2);
 
-            let t1w31_im = vmulq_f32(t1_re, w3_1_im);
-            let t1w31_im = vmlaq_f32(t1w31_im, t1_im, w3_1_re);
+            vst1_f32(dst_ptr.add(j * 2), out0_0);
+            vst1_f32(dst_ptr.add((j + 1) * 2), out1_0);
+            vst1_f32(dst_ptr.add((j + 2) * 2), out2_0);
 
-            // t2*W_3^2: complex multiply t2 by (super::W3_2_RE, super::W3_2_IM)
-            let t2w32_re = vmulq_f32(t2_re, w3_2_re);
-            let t2w32_re = vmlsq_f32(t2w32_re, t2_im, w3_2_im);
+            let out0_1 = vget_high_f32(out0);
+            let out1_1 = vget_high_f32(out1);
+            let out2_1 = vget_high_f32(out2);
 
-            let t2w32_im = vmulq_f32(t2_re, w3_2_im);
-            let t2w32_im = vmlaq_f32(t2w32_im, t2_im, w3_2_re);
-
-            let y1_re = vaddq_f32(vaddq_f32(x0.0, t1w31_re), t2w32_re);
-            let y1_im = vaddq_f32(vaddq_f32(x0.1, t1w31_im), t2w32_im);
-
-            // Y2 = x0 + t1*W_3^2 + t2*W_3^1
-            // t1*W_3^2: complex multiply t1 by (super::W3_2_RE, super::W3_2_IM)
-            let t1w32_re = vmulq_f32(t1_re, w3_2_re);
-            let t1w32_re = vmlsq_f32(t1w32_re, t1_im, w3_2_im);
-
-            let t1w32_im = vmulq_f32(t1_re, w3_2_im);
-            let t1w32_im = vmlaq_f32(t1w32_im, t1_im, w3_2_re);
-
-            // t2*W_3^1: complex multiply t2 by (super::W3_1_RE, super::W3_1_IM)
-            let t2w31_re = vmulq_f32(t2_re, w3_1_re);
-            let t2w31_re = vmlsq_f32(t2w31_re, t2_im, w3_1_im);
-
-            let t2w31_im = vmulq_f32(t2_re, w3_1_im);
-            let t2w31_im = vmlaq_f32(t2w31_im, t2_im, w3_1_re);
-
-            let y2_re = vaddq_f32(vaddq_f32(x0.0, t1w32_re), t2w31_re);
-            let y2_im = vaddq_f32(vaddq_f32(x0.1, t1w32_im), t2w31_im);
-
-            // Store using vst2q (automatically reinterleaves)
-            let y0_ptr = data.as_mut_ptr().add(idx) as *mut f32;
-            vst2q_f32(y0_ptr, float32x4x2_t(y0_re, y0_im));
-
-            let y1_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
-            vst2q_f32(y1_ptr, float32x4x2_t(y1_re, y1_im));
-
-            let y2_ptr = data.as_mut_ptr().add(idx + 2 * num_columns) as *mut f32;
-            vst2q_f32(y2_ptr, float32x4x2_t(y2_re, y2_im));
+            let j1 = 3 * (i + 1);
+            vst1_f32(dst_ptr.add(j1 * 2), out0_1);
+            vst1_f32(dst_ptr.add((j1 + 1) * 2), out1_1);
+            vst1_f32(dst_ptr.add((j1 + 2) * 2), out2_1);
         }
+    }
 
-        super::butterfly_3_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
+    for i in simd_iters..third_samples {
+        let w1 = stage_twiddles[i * 2];
+        let w2 = stage_twiddles[i * 2 + 1];
+
+        let z0 = src[i];
+        let z1 = src[i + third_samples];
+        let z2 = src[i + third_samples * 2];
+
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+
+        let sum_t = t1.add(&t2);
+        let diff_t = t1.sub(&t2);
+
+        let j = 3 * i;
+        dst[j] = z0.add(&sum_t);
+
+        let re_part = z0.re - 0.5 * sum_t.re;
+        let im_part = z0.im - 0.5 * sum_t.im;
+        let sqrt3_diff_re = SQRT3_2 * diff_t.im;
+        let sqrt3_diff_im = -SQRT3_2 * diff_t.re;
+
+        dst[j + 1] = Complex32::new(re_part + sqrt3_diff_re, im_part + sqrt3_diff_im);
+        dst[j + 2] = Complex32::new(re_part - sqrt3_diff_re, im_part - sqrt3_diff_im);
     }
 }
 
-/// NEON implementation: processes 2 columns at once using vld1q/vst1q.
-#[cfg(target_arch = "aarch64")]
+/// Performs a single radix-3 Stockham butterfly stage for p>1 (out-of-place, NEON).
+///
+/// This is the generic version for stride>1 cases. Uses direct SIMD stores,
+/// accepting non-sequential stores as the shuffle overhead isn't justified.
 #[target_feature(enable = "neon")]
-pub(super) unsafe fn butterfly_3_neon_x2(
-    data: &mut [Complex32],
+pub(super) unsafe fn butterfly_radix3_generic_neon(
+    src: &[Complex32],
+    dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
-    start_col: usize,
-    num_columns: usize,
+    stride: usize,
 ) {
     use core::arch::aarch64::*;
 
+    let samples = src.len();
+    let third_samples = samples / 3;
+    let simd_iters = (third_samples >> 1) << 1;
+
+    // Sign flip mask for complex multiplication: [-0.0, +0.0, -0.0, +0.0].
+    #[repr(align(16))]
+    struct AlignedMask([u32; 4]);
+    const SIGN_FLIP_MASK: AlignedMask =
+        AlignedMask([0x80000000, 0x00000000, 0x80000000, 0x00000000]);
+
+    #[repr(align(16))]
+    struct AlignedPattern([f32; 4]);
+    const SQRT3_PATTERN: AlignedPattern = AlignedPattern([SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2]);
+
     unsafe {
-        let simd_cols = ((num_columns - start_col) / 2) * 2;
+        let sign_flip = vreinterpretq_f32_u32(vld1q_u32(SIGN_FLIP_MASK.0.as_ptr()));
+        let half_vec = vdupq_n_f32(0.5);
+        let sqrt3_signs = vld1q_f32(SQRT3_PATTERN.0.as_ptr());
 
-        // Broadcast W3 constants for SIMD operations.
-        let w3_1_re = vdupq_n_f32(super::W3_1_RE);
-        let w3_1_im = vdupq_n_f32(super::W3_1_IM);
-        let w3_2_re = vdupq_n_f32(super::W3_2_RE);
-        let w3_2_im = vdupq_n_f32(super::W3_2_IM);
+        for i in (0..simd_iters).step_by(2) {
+            let k0 = i % stride;
+            let k1 = (i + 1) % stride;
 
-        for idx in (start_col..start_col + simd_cols).step_by(2) {
-            // Load 2 complex numbers (4 f32) from each row as interleaved
-            let x0_ptr = data.as_ptr().add(idx) as *const f32;
-            let x0 = vld1q_f32(x0_ptr);
+            // Load z0 from first third (contiguous).
+            let z0_ptr = src.as_ptr().add(i) as *const f32;
+            let z0 = vld1q_f32(z0_ptr);
 
-            let x1_ptr = data.as_ptr().add(idx + num_columns) as *const f32;
-            let x1 = vld1q_f32(x1_ptr);
+            // Load z1, z2 from other thirds using contiguous loads.
+            let z1_ptr = src.as_ptr().add(i + third_samples) as *const f32;
+            let z1 = vld1q_f32(z1_ptr);
 
-            let x2_ptr = data.as_ptr().add(idx + 2 * num_columns) as *const f32;
-            let x2 = vld1q_f32(x2_ptr);
+            let z2_ptr = src.as_ptr().add(i + third_samples * 2) as *const f32;
+            let z2 = vld1q_f32(z2_ptr);
 
-            // Load 4 twiddle factors: w1[0], w2[0], w1[1], w2[1]
-            // Layout: [w1[0].re, w1[0].im, w2[0].re, w2[0].im]
-            let tw1_ptr = stage_twiddles.as_ptr().add(idx * 2) as *const f32;
-            let tw_0 = vld1q_f32(tw1_ptr);
-            // Layout: [w1[1].re, w1[1].im, w2[1].re, w2[1].im]
-            let tw_1 = vld1q_f32(tw1_ptr.add(4));
+            // Load 4 twiddles contiguously (2 iterations × 2 twiddles each).
+            let tw_ptr = stage_twiddles.as_ptr().add(i * 2) as *const f32;
+            let tw_01 = vld1q_f32(tw_ptr); // w1[0], w2[0]
+            let tw_23 = vld1q_f32(tw_ptr.add(4)); // w1[1], w2[1]
 
-            // Extract w1 and w2 using vtrn1q_f64/vtrn2q_f64
-            // Treat as pairs of f64 to transpose: [w1[0], w2[0]] and [w1[1], w2[1]]
-            // vtrn1q_f64 selects first element from each pair: [w1[0], w1[1]]
-            // vtrn2q_f64 selects second element from each pair: [w2[0], w2[1]]
-            let tw_0_f64 = vreinterpretq_f64_f32(tw_0);
-            let tw_1_f64 = vreinterpretq_f64_f32(tw_1);
-            let w1 = vreinterpretq_f32_f64(vtrn1q_f64(tw_0_f64, tw_1_f64)); // [w1[0].re, w1[0].im, w1[1].re, w1[1].im]
-            let w2 = vreinterpretq_f32_f64(vtrn2q_f64(tw_0_f64, tw_1_f64)); // [w2[0].re, w2[0].im, w2[1].re, w2[1].im]
+            // Extract w1 and w2.
+            let w1_low = vget_low_f32(tw_01); // w1[0]
+            let w1_high = vget_low_f32(tw_23); // w1[1]
+            let w1 = vcombine_f32(w1_low, w1_high);
 
-            // Deinterleave x0, x1, x2, w1, w2 using vuzpq
-            let x0_parts = vuzpq_f32(x0, x0); // .0 = real, .1 = imag
-            let x1_parts = vuzpq_f32(x1, x1);
-            let x2_parts = vuzpq_f32(x2, x2);
-            let w1_parts = vuzpq_f32(w1, w1);
-            let w2_parts = vuzpq_f32(w2, w2);
+            let w2_low = vget_high_f32(tw_01); // w2[0]
+            let w2_high = vget_high_f32(tw_23); // w2[1]
+            let w2 = vcombine_f32(w2_low, w2_high);
 
-            // Complex multiply: t1 = x1 * w1
-            // t1.re = w1.re * x1.re - w1.im * x1.im
-            // t1.im = w1.re * x1.im + w1.im * x1.re
-            let t1_re = vmulq_f32(w1_parts.0, x1_parts.0);
-            let t1_re = vmlsq_f32(t1_re, w1_parts.1, x1_parts.1);
+            // Complex multiply: t1 = w1 * z1
+            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
+            let w1_transposed = vtrnq_f32(w1, w1);
+            let w1_re_dup = w1_transposed.0; // [w1[0].re, w1[0].re, w1[1].re, w1[1].re]
+            let w1_im_dup = w1_transposed.1; // [w1[0].im, w1[0].im, w1[1].im, w1[1].im]
+            let z1_swap = vrev64q_f32(z1);
+            let w1_im_signed = vreinterpretq_f32_u32(veorq_u32(
+                vreinterpretq_u32_f32(w1_im_dup),
+                vreinterpretq_u32_f32(sign_flip),
+            ));
+            let t1 = vmlaq_f32(vmulq_f32(w1_re_dup, z1), w1_im_signed, z1_swap);
 
-            let t1_im = vmulq_f32(w1_parts.0, x1_parts.1);
-            let t1_im = vmlaq_f32(t1_im, w1_parts.1, x1_parts.0);
+            // Complex multiply: t2 = w2 * z2
+            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
+            let w2_transposed = vtrnq_f32(w2, w2);
+            let w2_re_dup = w2_transposed.0;
+            let w2_im_dup = w2_transposed.1;
+            let z2_swap = vrev64q_f32(z2);
+            let w2_im_signed = vreinterpretq_f32_u32(veorq_u32(
+                vreinterpretq_u32_f32(w2_im_dup),
+                vreinterpretq_u32_f32(sign_flip),
+            ));
+            let t2 = vmlaq_f32(vmulq_f32(w2_re_dup, z2), w2_im_signed, z2_swap);
 
-            // Complex multiply: t2 = x2 * w2
-            let t2_re = vmulq_f32(w2_parts.0, x2_parts.0);
-            let t2_re = vmlsq_f32(t2_re, w2_parts.1, x2_parts.1);
+            // Radix-3 DFT.
+            // sum_t = t1 + t2, diff_t = t1 - t2
+            let sum_t = vaddq_f32(t1, t2);
+            let diff_t = vsubq_f32(t1, t2);
 
-            let t2_im = vmulq_f32(w2_parts.0, x2_parts.1);
-            let t2_im = vmlaq_f32(t2_im, w2_parts.1, x2_parts.0);
+            // out0 = z0 + sum_t
+            let out0 = vaddq_f32(z0, sum_t);
 
-            // Y0 = x0 + t1 + t2
-            let y0_re = vaddq_f32(vaddq_f32(x0_parts.0, t1_re), t2_re);
-            let y0_im = vaddq_f32(vaddq_f32(x0_parts.1, t1_im), t2_im);
+            // re_im_part = z0 - 0.5 * sum_t
+            let half_sum_t = vmulq_f32(sum_t, half_vec);
+            let re_im_part = vsubq_f32(z0, half_sum_t);
 
-            // Y1 = x0 + t1*W_3^1 + t2*W_3^2
-            // t1*W_3^1: complex multiply t1 by (super::W3_1_RE, super::W3_1_IM)
-            let t1w31_re = vmulq_f32(t1_re, w3_1_re);
-            let t1w31_re = vmlsq_f32(t1w31_re, t1_im, w3_1_im);
+            // sqrt3_diff = SQRT3_2 * [diff_t.im, -diff_t.re]
+            // diff_t = [re0, im0, re1, im1]
+            // diff_t_swap = [im0, re0, im1, re1]
+            let diff_t_swap = vrev64q_f32(diff_t);
+            // Multiply by [SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2]
+            // to get [SQRT3_2 * im0, -SQRT3_2 * re0, SQRT3_2 * im1, -SQRT3_2 * re1]
+            let sqrt3_diff = vmulq_f32(diff_t_swap, sqrt3_signs);
 
-            let t1w31_im = vmulq_f32(t1_re, w3_1_im);
-            let t1w31_im = vmlaq_f32(t1w31_im, t1_im, w3_1_re);
+            let out1 = vaddq_f32(re_im_part, sqrt3_diff);
+            let out2 = vsubq_f32(re_im_part, sqrt3_diff);
 
-            // t2*W_3^2: complex multiply t2 by (super::W3_2_RE, super::W3_2_IM)
-            let t2w32_re = vmulq_f32(t2_re, w3_2_re);
-            let t2w32_re = vmlsq_f32(t2w32_re, t2_im, w3_2_im);
+            // Calculate output indices: j = 3*i - 2*k
+            let j0 = 3 * i - 2 * k0;
+            let j1 = 3 * (i + 1) - 2 * k1;
 
-            let t2w32_im = vmulq_f32(t2_re, w3_2_im);
-            let t2w32_im = vmlaq_f32(t2w32_im, t2_im, w3_2_re);
+            // Extract and store each complex number separately.
+            let dst_ptr = dst.as_mut_ptr() as *mut f32;
 
-            let y1_re = vaddq_f32(vaddq_f32(x0_parts.0, t1w31_re), t2w32_re);
-            let y1_im = vaddq_f32(vaddq_f32(x0_parts.1, t1w31_im), t2w32_im);
+            let out0_0 = vget_low_f32(out0);
+            let out1_0 = vget_low_f32(out1);
+            let out2_0 = vget_low_f32(out2);
 
-            // Y2 = x0 + t1*W_3^2 + t2*W_3^1
-            // t1*W_3^2: complex multiply t1 by (super::W3_2_RE, super::W3_2_IM)
-            let t1w32_re = vmulq_f32(t1_re, w3_2_re);
-            let t1w32_re = vmlsq_f32(t1w32_re, t1_im, w3_2_im);
+            vst1_f32(dst_ptr.add(j0 << 1), out0_0);
+            vst1_f32(dst_ptr.add((j0 + stride) << 1), out1_0);
+            vst1_f32(dst_ptr.add((j0 + stride * 2) << 1), out2_0);
 
-            let t1w32_im = vmulq_f32(t1_re, w3_2_im);
-            let t1w32_im = vmlaq_f32(t1w32_im, t1_im, w3_2_re);
+            let out0_1 = vget_high_f32(out0);
+            let out1_1 = vget_high_f32(out1);
+            let out2_1 = vget_high_f32(out2);
 
-            // t2*W_3^1: complex multiply t2 by (super::W3_1_RE, super::W3_1_IM)
-            let t2w31_re = vmulq_f32(t2_re, w3_1_re);
-            let t2w31_re = vmlsq_f32(t2w31_re, t2_im, w3_1_im);
-
-            let t2w31_im = vmulq_f32(t2_re, w3_1_im);
-            let t2w31_im = vmlaq_f32(t2w31_im, t2_im, w3_1_re);
-
-            let y2_re = vaddq_f32(vaddq_f32(x0_parts.0, t1w32_re), t2w31_re);
-            let y2_im = vaddq_f32(vaddq_f32(x0_parts.1, t1w32_im), t2w31_im);
-
-            // Reinterleave using vzipq and store
-            let y0_interleaved = vzipq_f32(y0_re, y0_im);
-            let y0_ptr = data.as_mut_ptr().add(idx) as *mut f32;
-            vst1q_f32(y0_ptr, y0_interleaved.0);
-
-            let y1_interleaved = vzipq_f32(y1_re, y1_im);
-            let y1_ptr = data.as_mut_ptr().add(idx + num_columns) as *mut f32;
-            vst1q_f32(y1_ptr, y1_interleaved.0);
-
-            let y2_interleaved = vzipq_f32(y2_re, y2_im);
-            let y2_ptr = data.as_mut_ptr().add(idx + 2 * num_columns) as *mut f32;
-            vst1q_f32(y2_ptr, y2_interleaved.0);
+            vst1_f32(dst_ptr.add(j1 << 1), out0_1);
+            vst1_f32(dst_ptr.add((j1 + stride) << 1), out1_1);
+            vst1_f32(dst_ptr.add((j1 + stride * 2) << 1), out2_1);
         }
+    }
 
-        super::butterfly_3_scalar(data, stage_twiddles, start_col + simd_cols, num_columns);
+    for i in simd_iters..third_samples {
+        let k = i % stride;
+        let w1 = stage_twiddles[i * 2];
+        let w2 = stage_twiddles[i * 2 + 1];
+
+        let z0 = src[i];
+        let z1 = src[i + third_samples];
+        let z2 = src[i + third_samples * 2];
+
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+
+        let sum_t = t1.add(&t2);
+        let diff_t = t1.sub(&t2);
+
+        let j = 3 * i - 2 * k;
+        dst[j] = z0.add(&sum_t);
+
+        let re_part = z0.re - 0.5 * sum_t.re;
+        let im_part = z0.im - 0.5 * sum_t.im;
+        let sqrt3_diff_re = SQRT3_2 * diff_t.im;
+        let sqrt3_diff_im = -SQRT3_2 * diff_t.re;
+
+        dst[j + stride] = Complex32::new(re_part + sqrt3_diff_re, im_part + sqrt3_diff_im);
+        dst[j + stride * 2] = Complex32::new(re_part - sqrt3_diff_re, im_part - sqrt3_diff_im);
     }
 }

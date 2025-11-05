@@ -160,19 +160,8 @@ impl ConversionConfig {
         let scaled_fft_size_out = base_config.base_fft_size_out * output_multiplier;
 
         // Decompose multipliers into radix factors.
-        let prefer_factor4_input = base_config
-            .base_factors_in
-            .iter()
-            .any(|factor| factor != &Radix::Factor2);
-        let prefer_factor4_output = base_config
-            .base_factors_out
-            .iter()
-            .any(|factor| factor != &Radix::Factor2);
-
-        let input_multiplier_factors =
-            Self::decompose_multiplier(input_multiplier, prefer_factor4_input);
-        let output_multiplier_factors =
-            Self::decompose_multiplier(output_multiplier, prefer_factor4_output);
+        let input_multiplier_factors = Self::decompose_multiplier(input_multiplier);
+        let output_multiplier_factors = Self::decompose_multiplier(output_multiplier);
 
         // Append multiplier factors to base factors (maintains high→low ordering).
         let mut scaled_factors_in = base_config.base_factors_in.clone();
@@ -190,7 +179,7 @@ impl ConversionConfig {
     }
 
     /// Decompose a power-of-2 multiplier into radix factors.
-    fn decompose_multiplier(multiplier: usize, prefer_factor4: bool) -> Vec<Radix> {
+    fn decompose_multiplier(multiplier: usize) -> Vec<Radix> {
         if multiplier == 1 {
             return Vec::new();
         }
@@ -199,20 +188,15 @@ impl ConversionConfig {
 
         let num_bits = multiplier.trailing_zeros() as usize;
 
-        if prefer_factor4 {
-            // Prefer Factor4 for efficiency: decompose into 4s and 2s.
-            let num_factor4 = num_bits / 2;
-            let num_factor2 = num_bits % 2;
+        // Prefer Factor4 for efficiency: decompose into 4s and 2s.
+        let num_factor4 = num_bits / 2;
+        let num_factor2 = num_bits % 2;
 
-            let mut factors = vec![Radix::Factor4; num_factor4];
-            if num_factor2 > 0 {
-                factors.push(Radix::Factor2);
-            }
-            factors
-        } else {
-            // Pure Factor2 for power-of-2 bases (Cooley-Tukey fast path).
-            vec![Radix::Factor2; num_bits]
+        let mut factors = vec![Radix::Factor4; num_factor4];
+        if num_factor2 > 0 {
+            factors.push(Radix::Factor2);
         }
+        factors
     }
 
     /// Scale the base FFT sizes to ensure a minimum of 512 input samples.
@@ -235,15 +219,9 @@ impl ConversionConfig {
         let scaled_fft_size_in = self.base_fft_size_in * multiplier;
         let scaled_fft_size_out = self.base_fft_size_out * multiplier;
 
-        // Determine if base sizes are power of 2.
-        let base_in_is_power_of_2 = self.base_fft_size_in.is_power_of_two();
-        let base_out_is_power_of_2 = self.base_fft_size_out.is_power_of_two();
-
-        // Decompose multiplier into factors:
-        // - For power-of-2 bases: use only Factor2 to preserve Cooley-Tukey optimization.
-        // - For mixed-radix bases: prefer Factor4 for efficiency.
-        let scaling_factors_in = Self::decompose_multiplier(multiplier, !base_in_is_power_of_2);
-        let scaling_factors_out = Self::decompose_multiplier(multiplier, !base_out_is_power_of_2);
+        // Decompose multiplier into factors.
+        let scaling_factors_in = Self::decompose_multiplier(multiplier);
+        let scaling_factors_out = Self::decompose_multiplier(multiplier);
 
         let mut factors_in = self.base_factors_in.clone();
         factors_in.extend(scaling_factors_in);
