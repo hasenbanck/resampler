@@ -1,5 +1,8 @@
 use super::SQRT3_2;
-use crate::fft::Complex32;
+use crate::fft::{
+    Complex32,
+    butterflies::ops::{complex_mul_avx, complex_mul_sqrt3_i_avx},
+};
 
 /// Performs a single radix-3 Stockham butterfly stage (out-of-place, AVX+FMA) for stride=1 (first stage).
 #[target_feature(enable = "avx,fma")]
@@ -27,30 +30,14 @@ pub(super) unsafe fn butterfly_radix3_stride1_avx_fma(
             let z2_ptr = src.as_ptr().add(i + third_samples * 2) as *const f32;
             let z2 = _mm256_loadu_ps(z2_ptr);
 
-            // Load 8 twiddles contiguously.
+            // Load prepackaged twiddles directly (no shuffle needed).
             let tw_ptr = stage_twiddles.as_ptr().add(i * 2) as *const f32;
-            let tw0 = _mm256_loadu_ps(tw_ptr); // w1[0], w2[0], w1[1], w2[1]
-            let tw1 = _mm256_loadu_ps(tw_ptr.add(8)); // w1[2], w2[2], w1[3], w2[3]
+            let w1 = _mm256_loadu_ps(tw_ptr); // w1[i..i+4]
+            let w2 = _mm256_loadu_ps(tw_ptr.add(8)); // w2[i..i+4]
 
-            // Extract w1 and w2 from contiguous loads.
-            let temp_0_low = _mm256_permute2f128_ps(tw0, tw1, 0x20);
-            let temp_0_high = _mm256_permute2f128_ps(tw0, tw1, 0x31);
-            let w1 = _mm256_shuffle_ps(temp_0_low, temp_0_high, 0b01_00_01_00);
-            let w2 = _mm256_shuffle_ps(temp_0_low, temp_0_high, 0b11_10_11_10);
-
-            // Complex multiply: t1 = w1 * z1
-            let z1_re = _mm256_moveldup_ps(z1);
-            let z1_im = _mm256_movehdup_ps(z1);
-            let w1_swap = _mm256_permute_ps(w1, 0b10_11_00_01);
-            let prod1_im = _mm256_mul_ps(w1_swap, z1_im);
-            let t1 = _mm256_fmaddsub_ps(w1, z1_re, prod1_im);
-
-            // Complex multiply: t2 = w2 * z2
-            let z2_re = _mm256_moveldup_ps(z2);
-            let z2_im = _mm256_movehdup_ps(z2);
-            let w2_swap = _mm256_permute_ps(w2, 0b10_11_00_01);
-            let prod2_im = _mm256_mul_ps(w2_swap, z2_im);
-            let t2 = _mm256_fmaddsub_ps(w2, z2_re, prod2_im);
+            // Complex multiply: t1 = w1 * z1, t2 = w2 * z2
+            let t1 = complex_mul_avx(w1, z1);
+            let t2 = complex_mul_avx(w2, z2);
 
             // sum_t = t1 + t2, diff_t = t1 - t2
             let sum_t = _mm256_add_ps(t1, t2);
@@ -64,13 +51,7 @@ pub(super) unsafe fn butterfly_radix3_stride1_avx_fma(
             let re_im_part = _mm256_sub_ps(z0, half_sum_t);
 
             // sqrt3 multiplication
-            let diff_t_swap = _mm256_shuffle_ps(diff_t, diff_t, 0b10_11_00_01);
-            let sqrt3_diff = _mm256_mul_ps(
-                diff_t_swap,
-                _mm256_set_ps(
-                    -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2,
-                ),
-            );
+            let sqrt3_diff = complex_mul_sqrt3_i_avx(diff_t, SQRT3_2);
 
             let out1 = _mm256_add_ps(re_im_part, sqrt3_diff);
             let out2 = _mm256_sub_ps(re_im_part, sqrt3_diff);
@@ -173,32 +154,14 @@ pub(super) unsafe fn butterfly_radix3_generic_avx_fma(
             let z2_ptr = src.as_ptr().add(i + third_samples * 2) as *const f32;
             let z2 = _mm256_loadu_ps(z2_ptr);
 
-            // Load 8 twiddles contiguously.
+            // Load prepackaged twiddles directly (no shuffle needed).
             let tw_ptr = stage_twiddles.as_ptr().add(i * 2) as *const f32;
-            let tw0 = _mm256_loadu_ps(tw_ptr); // w1[0], w2[0], w1[1], w2[1]
-            let tw1 = _mm256_loadu_ps(tw_ptr.add(8)); // w1[2], w2[2], w1[3], w2[3]
+            let w1 = _mm256_loadu_ps(tw_ptr); // w1[i..i+4]
+            let w2 = _mm256_loadu_ps(tw_ptr.add(8)); // w2[i..i+4]
 
-            // Extract w1 and w2 from contiguous loads.
-            // tw0 = [w1[0], w2[0] | w1[1], w2[1]]
-            // tw1 = [w1[2], w2[2] | w1[3], w2[3]]
-            let temp_0_low = _mm256_permute2f128_ps(tw0, tw1, 0x20);
-            let temp_0_high = _mm256_permute2f128_ps(tw0, tw1, 0x31);
-            let w1 = _mm256_shuffle_ps(temp_0_low, temp_0_high, 0b01_00_01_00);
-            let w2 = _mm256_shuffle_ps(temp_0_low, temp_0_high, 0b11_10_11_10);
-
-            // Complex multiply: t1 = w1 * z1
-            let z1_re = _mm256_moveldup_ps(z1);
-            let z1_im = _mm256_movehdup_ps(z1);
-            let w1_swap = _mm256_permute_ps(w1, 0b10_11_00_01);
-            let prod1_im = _mm256_mul_ps(w1_swap, z1_im);
-            let t1 = _mm256_fmaddsub_ps(w1, z1_re, prod1_im);
-
-            // Complex multiply: t2 = w2 * z2
-            let z2_re = _mm256_moveldup_ps(z2);
-            let z2_im = _mm256_movehdup_ps(z2);
-            let w2_swap = _mm256_permute_ps(w2, 0b10_11_00_01);
-            let prod2_im = _mm256_mul_ps(w2_swap, z2_im);
-            let t2 = _mm256_fmaddsub_ps(w2, z2_re, prod2_im);
+            // Complex multiply: t1 = w1 * z1, t2 = w2 * z2
+            let t1 = complex_mul_avx(w1, z1);
+            let t2 = complex_mul_avx(w2, z2);
 
             // sum_t = t1 + t2, diff_t = t1 - t2
             let sum_t = _mm256_add_ps(t1, t2);
@@ -211,20 +174,8 @@ pub(super) unsafe fn butterfly_radix3_generic_avx_fma(
             let half_sum_t = _mm256_mul_ps(sum_t, half_vec);
             let re_im_part = _mm256_sub_ps(z0, half_sum_t);
 
-            // Extract real and imaginary parts separately for sqrt3 multiplication.
-            // diff_t contains [re0, im0, re1, im1, re2, im2, re3, im3]
-            // We need sqrt3_diff = SQRT3_2 * diff_t.im + i * (-SQRT3_2 * diff_t.re)
-            //                    = SQRT3_2 * [im, -re]
-
-            // Swap and multiply by sqrt3_2.
-            // diff_t_swap has [im, re, ...], we want [SQRT3_2 * im, -SQRT3_2 * re, ...]
-            let diff_t_swap = _mm256_shuffle_ps(diff_t, diff_t, 0b10_11_00_01);
-            let sqrt3_diff = _mm256_mul_ps(
-                diff_t_swap,
-                _mm256_set_ps(
-                    -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2,
-                ),
-            );
+            // sqrt3 multiplication
+            let sqrt3_diff = complex_mul_sqrt3_i_avx(diff_t, SQRT3_2);
 
             let out1 = _mm256_add_ps(re_im_part, sqrt3_diff);
             let out2 = _mm256_sub_ps(re_im_part, sqrt3_diff);

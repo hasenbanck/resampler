@@ -3,6 +3,7 @@ mod butterfly3;
 mod butterfly4;
 mod butterfly5;
 mod butterfly7;
+mod ops;
 
 pub(crate) use butterfly2::butterfly_radix2_dispatch;
 #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
@@ -42,9 +43,18 @@ pub(crate) use butterfly7::{
 
 #[cfg(test)]
 mod tests {
-    use alloc::{format, vec};
+    use alloc::{format, vec, vec::Vec};
 
     use crate::fft::Complex32;
+
+    /// SIMD width for twiddle packing in tests.
+    #[derive(Debug, Clone, Copy)]
+    pub(super) enum TestSimdWidth {
+        /// AVX: 4 complex numbers (256-bit)
+        Width4,
+        /// SSE/NEON: 2 complex numbers (128-bit)
+        Width2,
+    }
 
     fn approx_eq_complex(a: &Complex32, b: &Complex32, epsilon: f32) -> bool {
         (a.re - b.re).abs() < epsilon && (a.im - b.im).abs() < epsilon
@@ -112,6 +122,7 @@ mod tests {
         simd_fn: G,
         radix: usize,
         twiddles_per_stride: usize,
+        simd_width: TestSimdWidth,
         test_name: &str,
     ) where
         F: Fn(&[Complex32], &mut [Complex32], &[Complex32], usize),
@@ -162,9 +173,9 @@ mod tests {
             }
 
             let iterations = samples / radix;
-            let mut twiddles = vec![Complex32::zero(); iterations * twiddles_per_stride];
-            for i in 0..iterations {
-                let col = i % stride;
+
+            let mut base_twiddles = Vec::with_capacity(stride * twiddles_per_stride);
+            for col in 0..stride {
                 for k in 0..twiddles_per_stride {
                     let angle = 2.0 * core::f32::consts::PI * (col as f32 * (k + 1) as f32)
                         / (stride as f32 * radix as f32);
@@ -172,7 +183,55 @@ mod tests {
                     let tw = Complex32::new(angle.cos(), angle.sin());
                     #[cfg(feature = "no_std")]
                     let tw = Complex32::new(libm::cosf(angle), libm::sinf(angle));
-                    twiddles[i * twiddles_per_stride + k] = tw;
+                    base_twiddles.push(tw);
+                }
+            }
+
+            // Pack twiddles in SIMD-friendly layout based on SIMD width.
+            // SIMD iterations use packed format: [w1[i], w1[i+1], ..., w2[i], w2[i+1], ...]
+            // Scalar tail uses interleaved format: [w1[i], w2[i], w3[i], ...]
+            let mut twiddles = Vec::with_capacity(iterations * twiddles_per_stride);
+
+            match simd_width {
+                TestSimdWidth::Width4 => {
+                    // AVX layout: pack twiddles for 4 consecutive iterations.
+                    let simd_iters = (iterations / 4) * 4;
+                    for i in (0..simd_iters).step_by(4) {
+                        for tw_idx in 0..twiddles_per_stride {
+                            for j in 0..4 {
+                                let col = (i + j) % stride;
+                                let base_idx = col * twiddles_per_stride + tw_idx;
+                                twiddles.push(base_twiddles[base_idx]);
+                            }
+                        }
+                    }
+                    // Scalar tail: interleaved format.
+                    for i in simd_iters..iterations {
+                        let col = i % stride;
+                        for k in 0..twiddles_per_stride {
+                            twiddles.push(base_twiddles[col * twiddles_per_stride + k]);
+                        }
+                    }
+                }
+                TestSimdWidth::Width2 => {
+                    // SSE/NEON layout: pack twiddles for 2 consecutive iterations.
+                    let simd_iters = (iterations / 2) * 2;
+                    for i in (0..simd_iters).step_by(2) {
+                        for tw_idx in 0..twiddles_per_stride {
+                            for j in 0..2 {
+                                let col = (i + j) % stride;
+                                let base_idx = col * twiddles_per_stride + tw_idx;
+                                twiddles.push(base_twiddles[base_idx]);
+                            }
+                        }
+                    }
+                    // Scalar tail: interleaved format.
+                    for i in simd_iters..iterations {
+                        let col = i % stride;
+                        for k in 0..twiddles_per_stride {
+                            twiddles.push(base_twiddles[col * twiddles_per_stride + k]);
+                        }
+                    }
                 }
             }
 

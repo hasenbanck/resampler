@@ -29,12 +29,11 @@ pub(crate) unsafe fn postprocess_fft_sse2(
             let idx0 = right_len - 1 - i;
             let idx1 = right_len - 2 - i;
 
-            let out_rev = _mm_set_ps(
-                output_right_middle[idx1].im,
-                output_right_middle[idx1].re,
-                output_right_middle[idx0].im,
-                output_right_middle[idx0].re,
-            );
+            let out_rev0_ptr = &output_right_middle[idx0] as *const Complex32 as *const f64;
+            let out_rev1_ptr = &output_right_middle[idx1] as *const Complex32 as *const f64;
+            let out_rev_lo_pd = _mm_load_sd(out_rev0_ptr);
+            let out_rev_pd = _mm_loadh_pd(out_rev_lo_pd, out_rev1_ptr);
+            let out_rev = _mm_castpd_ps(out_rev_pd);
 
             let tw_ptr = twiddles.as_ptr().add(i) as *const f32;
             let tw = _mm_loadu_ps(tw_ptr);
@@ -86,12 +85,11 @@ pub(crate) unsafe fn postprocess_fft_sse2(
                 _mm_and_ps(mask_pattern, imag_minus_half_diff),
             );
 
-            let mut right_vals = [0.0f32; 4];
-            _mm_storeu_ps(right_vals.as_mut_ptr(), right_output);
-
-            output_right_middle[right_len - 1 - i] = Complex32::new(right_vals[0], right_vals[1]);
-            output_right_middle[right_len - 1 - (i + 1)] =
-                Complex32::new(right_vals[2], right_vals[3]);
+            let out_rev0_ptr_mut = &mut output_right_middle[idx0] as *mut Complex32 as *mut f64;
+            let out_rev1_ptr_mut = &mut output_right_middle[idx1] as *mut Complex32 as *mut f64;
+            let right_output_pd = _mm_castps_pd(right_output);
+            _mm_storel_pd(out_rev0_ptr_mut, right_output_pd);
+            _mm_storeh_pd(out_rev1_ptr_mut, right_output_pd);
         }
 
         let remaining_start = simd_count * 2;
@@ -152,12 +150,11 @@ pub(crate) unsafe fn preprocess_ifft_sse2(
             let idx0 = input_right_middle.len() - 1 - i;
             let idx1 = input_right_middle.len() - 2 - i;
 
-            let inp_rev = _mm_set_ps(
-                input_right_middle[idx1].im,
-                input_right_middle[idx1].re,
-                input_right_middle[idx0].im,
-                input_right_middle[idx0].re,
-            );
+            let inp_rev0_ptr = &input_right_middle[idx0] as *const Complex32 as *const f64;
+            let inp_rev1_ptr = &input_right_middle[idx1] as *const Complex32 as *const f64;
+            let inp_rev_lo_pd = _mm_load_sd(inp_rev0_ptr);
+            let inp_rev_pd = _mm_loadh_pd(inp_rev_lo_pd, inp_rev1_ptr);
+            let inp_rev = _mm_castpd_ps(inp_rev_pd);
 
             let tw_ptr = twiddles.as_ptr().add(i) as *const f32;
             let tw = _mm_loadu_ps(tw_ptr);
@@ -203,13 +200,11 @@ pub(crate) unsafe fn preprocess_ifft_sse2(
                 _mm_and_ps(mask_pattern, neg_imag_minus_diff),
             );
 
-            let mut right_vals = [0.0f32; 4];
-            _mm_storeu_ps(right_vals.as_mut_ptr(), right_input);
-
-            input_right_middle[input_right_middle.len() - 1 - i] =
-                Complex32::new(right_vals[0], right_vals[1]);
-            input_right_middle[input_right_middle.len() - 1 - (i + 1)] =
-                Complex32::new(right_vals[2], right_vals[3]);
+            let inp_rev0_ptr_mut = &mut input_right_middle[idx0] as *mut Complex32 as *mut f64;
+            let inp_rev1_ptr_mut = &mut input_right_middle[idx1] as *mut Complex32 as *mut f64;
+            let right_input_pd = _mm_castps_pd(right_input);
+            _mm_storel_pd(inp_rev0_ptr_mut, right_input_pd);
+            _mm_storeh_pd(inp_rev1_ptr_mut, right_input_pd);
         }
 
         let remaining_start = simd_count * 2;

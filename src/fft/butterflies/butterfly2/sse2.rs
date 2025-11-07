@@ -1,4 +1,4 @@
-use crate::fft::Complex32;
+use crate::fft::{Complex32, butterflies::ops::complex_mul_sse2};
 
 /// Performs a single radix-2 Stockham butterfly stage for stride=1 (out-of-place, SSE2).
 ///
@@ -32,23 +32,7 @@ pub(super) unsafe fn butterfly_radix2_stride1_sse2(
             let tw = _mm_loadu_ps(tw_ptr);
 
             // Complex multiply: t = tw * b
-            // We need to compute: (tw.re * b.re - tw.im * b.im) + i(tw.re * b.im + tw.im * b.re)
-            let b_re = _mm_shuffle_ps(b, b, 0b10_10_00_00); // [b0.re, b0.re, b1.re, b1.re]
-            let b_im = _mm_shuffle_ps(b, b, 0b11_11_01_01); // [b0.im, b0.im, b1.im, b1.im]
-            let tw_swap = _mm_shuffle_ps(tw, tw, 0b10_11_00_01); // Swap re/im
-
-            let prod_re = _mm_mul_ps(tw, b_re); // tw * b_re
-            let prod_im = _mm_mul_ps(tw_swap, b_im); // tw_swap * b_im
-
-            // Emulate addsub: result[i] = (i%2==0) ? prod_re[i]-prod_im[i] : prod_re[i]+prod_im[i]
-            let sub_result = _mm_sub_ps(prod_re, prod_im);
-            let add_result = _mm_add_ps(prod_re, prod_im);
-            // Mask: select odd lanes (1,3) for add, even lanes (0,2) for sub
-            let select_odd = _mm_castsi128_ps(_mm_set_epi32(-1, 0, -1, 0));
-            let t = _mm_or_ps(
-                _mm_and_ps(select_odd, add_result),
-                _mm_andnot_ps(select_odd, sub_result),
-            );
+            let t = complex_mul_sse2(tw, b);
 
             // Butterfly: out_top = a + t, out_bot = a - t
             let out_top = _mm_add_ps(a, t);
@@ -116,21 +100,7 @@ pub(super) unsafe fn butterfly_radix2_generic_sse2(
             let tw = _mm_loadu_ps(tw_ptr);
 
             // Complex multiply: t = tw * b
-            let b_re = _mm_shuffle_ps(b, b, 0b10_10_00_00); // [b0.re, b0.re, b1.re, b1.re]
-            let b_im = _mm_shuffle_ps(b, b, 0b11_11_01_01); // [b0.im, b0.im, b1.im, b1.im]
-            let tw_swap = _mm_shuffle_ps(tw, tw, 0b10_11_00_01); // Swap re/im
-
-            let prod_re = _mm_mul_ps(tw, b_re);
-            let prod_im = _mm_mul_ps(tw_swap, b_im);
-
-            // Emulate addsub.
-            let sub_result = _mm_sub_ps(prod_re, prod_im);
-            let add_result = _mm_add_ps(prod_re, prod_im);
-            let select_odd = _mm_castsi128_ps(_mm_set_epi32(-1, 0, -1, 0));
-            let t = _mm_or_ps(
-                _mm_and_ps(select_odd, add_result),
-                _mm_andnot_ps(select_odd, sub_result),
-            );
+            let t = complex_mul_sse2(tw, b);
 
             // Butterfly: out_top = a + t, out_bot = a - t
             let out_top = _mm_add_ps(a, t);

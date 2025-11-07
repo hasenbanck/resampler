@@ -1,3 +1,6 @@
+use core::arch::aarch64::*;
+
+use super::super::ops::complex_mul;
 use crate::fft::Complex32;
 
 /// Performs a single radix-2 Stockham butterfly stage for stride=1 (out-of-place, NEON).
@@ -11,21 +14,11 @@ pub(super) unsafe fn butterfly_radix2_stride1_neon(
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
 ) {
-    use core::arch::aarch64::*;
-
     let samples = src.len();
     let half_samples = samples >> 1;
     let simd_iters = (half_samples >> 1) << 1;
 
-    // Sign flip mask for complex multiplication: [-0.0, +0.0, -0.0, +0.0].
-    #[repr(align(16))]
-    struct AlignedMask([u32; 4]);
-    const SIGN_FLIP_MASK: AlignedMask =
-        AlignedMask([0x80000000, 0x00000000, 0x80000000, 0x00000000]);
-
     unsafe {
-        let sign_flip = vreinterpretq_f32_u32(vld1q_u32(SIGN_FLIP_MASK.0.as_ptr()));
-
         for i in (0..simd_iters).step_by(2) {
             // Load 2 complex numbers from first half.
             let a_ptr = src.as_ptr().add(i) as *const f32;
@@ -39,26 +32,7 @@ pub(super) unsafe fn butterfly_radix2_stride1_neon(
             let tw_ptr = stage_twiddles.as_ptr().add(i) as *const f32;
             let tw = vld1q_f32(tw_ptr);
 
-            // Complex multiply: t = tw * b
-            // Transpose to duplicate real and imaginary parts.
-            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
-            let tw_transposed = vtrnq_f32(tw, tw);
-            let tw_re_dup = tw_transposed.0; // [w0.re, w0.re, w1.re, w1.re]
-            let tw_im_dup = tw_transposed.1; // [w0.im, w0.im, w1.im, w1.im]
-
-            // Swap real and imaginary parts: [b.im, b.re, b.im, b.re]
-            let b_swap = vrev64q_f32(b);
-
-            // Apply sign flip to imaginary parts: [-w.im, +w.im, -w.im, +w.im]
-            let tw_im_signed = vreinterpretq_f32_u32(veorq_u32(
-                vreinterpretq_u32_f32(tw_im_dup),
-                vreinterpretq_u32_f32(sign_flip),
-            ));
-
-            // Compute: t = tw_re * b + tw_im_signed * b_swap
-            // Real part: w.re * b.re - w.im * b.im
-            // Imag part: w.re * b.im + w.im * b.re
-            let t = vmlaq_f32(vmulq_f32(tw_re_dup, b), tw_im_signed, b_swap);
+            let t = complex_mul(b, tw);
 
             // Butterfly: out_top = a + t, out_bot = a - t
             let out_top = vaddq_f32(a, t); // Results for even indices
@@ -106,21 +80,11 @@ pub(super) unsafe fn butterfly_radix2_generic_neon(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
-    use core::arch::aarch64::*;
-
     let samples = src.len();
     let half_samples = samples >> 1;
     let simd_iters = (half_samples >> 1) << 1;
 
-    // Sign flip mask for complex multiplication.
-    #[repr(align(16))]
-    struct AlignedMask([u32; 4]);
-    const SIGN_FLIP_MASK: AlignedMask =
-        AlignedMask([0x80000000, 0x00000000, 0x80000000, 0x00000000]);
-
     unsafe {
-        let sign_flip = vreinterpretq_f32_u32(vld1q_u32(SIGN_FLIP_MASK.0.as_ptr()));
-
         for i in (0..simd_iters).step_by(2) {
             let k0 = i % stride;
             let k1 = (i + 1) % stride;
@@ -137,19 +101,7 @@ pub(super) unsafe fn butterfly_radix2_generic_neon(
             let tw_ptr = stage_twiddles.as_ptr().add(i) as *const f32;
             let tw = vld1q_f32(tw_ptr);
 
-            // Complex multiply: t = tw * b
-            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
-            let tw_transposed = vtrnq_f32(tw, tw);
-            let tw_re_dup = tw_transposed.0; // [w0.re, w0.re, w1.re, w1.re]
-            let tw_im_dup = tw_transposed.1; // [w0.im, w0.im, w1.im, w1.im]
-            let b_swap = vrev64q_f32(b);
-
-            let tw_im_signed = vreinterpretq_f32_u32(veorq_u32(
-                vreinterpretq_u32_f32(tw_im_dup),
-                vreinterpretq_u32_f32(sign_flip),
-            ));
-
-            let t = vmlaq_f32(vmulq_f32(tw_re_dup, b), tw_im_signed, b_swap);
+            let t = complex_mul(b, tw);
 
             // Butterfly: out_top = a + t, out_bot = a - t
             let out_top = vaddq_f32(a, t);

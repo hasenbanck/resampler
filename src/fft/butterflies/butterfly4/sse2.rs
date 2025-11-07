@@ -1,4 +1,7 @@
-use crate::fft::Complex32;
+use crate::fft::{
+    Complex32,
+    butterflies::ops::{complex_mul_i_sse2, complex_mul_sse2, load_neg_imag_mask_sse2},
+};
 
 /// Performs a single radix-4 Stockham butterfly stage for stride=1 (out-of-place, SSE2).
 ///
@@ -17,6 +20,8 @@ pub(super) unsafe fn butterfly_radix4_stride1_sse2(
     let simd_iters = (quarter_samples >> 1) << 1;
 
     unsafe {
+        let neg_imag_mask = load_neg_imag_mask_sse2();
+
         for i in (0..simd_iters).step_by(2) {
             let z0_ptr = src.as_ptr().add(i) as *const f32;
             let z0 = _mm_loadu_ps(z0_ptr);
@@ -30,62 +35,16 @@ pub(super) unsafe fn butterfly_radix4_stride1_sse2(
             let z3_ptr = src.as_ptr().add(i + quarter_samples * 3) as *const f32;
             let z3 = _mm_loadu_ps(z3_ptr);
 
-            // Load 6 twiddles contiguously.
+            // Load prepackaged twiddles directly (no shuffle needed).
             let tw_ptr = stage_twiddles.as_ptr().add(i * 3) as *const f32;
-            let tw_0 = _mm_loadu_ps(tw_ptr); // [w1[0], w2[0]]
-            let tw_1 = _mm_loadu_ps(tw_ptr.add(4)); // [w3[0], w1[1]]
-            let tw_2 = _mm_loadu_ps(tw_ptr.add(8)); // [w2[1], w3[1]]
+            let w1 = _mm_loadu_ps(tw_ptr); // w1[i], w1[i+1]
+            let w2 = _mm_loadu_ps(tw_ptr.add(4)); // w2[i], w2[i+1]
+            let w3 = _mm_loadu_ps(tw_ptr.add(8)); // w3[i], w3[i+1]
 
-            // Extract w1, w2, w3 using shuffle_pd for 64-bit element selection.
-            let tw_0_pd = _mm_castps_pd(tw_0);
-            let tw_1_pd = _mm_castps_pd(tw_1);
-            let tw_2_pd = _mm_castps_pd(tw_2);
-
-            let w1 = _mm_castpd_ps(_mm_shuffle_pd(tw_0_pd, tw_1_pd, 0b10)); // [w1[0], w1[1]]
-            let w2 = _mm_castpd_ps(_mm_shuffle_pd(tw_0_pd, tw_2_pd, 0b01)); // [w2[0], w2[1]]
-            let w3 = _mm_castpd_ps(_mm_shuffle_pd(tw_1_pd, tw_2_pd, 0b10)); // [w3[0], w3[1]]
-
-            // Emulate addsub.
-            let select_odd = _mm_castsi128_ps(_mm_set_epi32(-1, 0, -1, 0));
-
-            // Complex multiply: t1 = w1 * z1
-            let z1_re = _mm_shuffle_ps(z1, z1, 0b10_10_00_00);
-            let z1_im = _mm_shuffle_ps(z1, z1, 0b11_11_01_01);
-            let w1_swap = _mm_shuffle_ps(w1, w1, 0b10_11_00_01);
-            let prod1_re = _mm_mul_ps(w1, z1_re);
-            let prod1_im = _mm_mul_ps(w1_swap, z1_im);
-            let sub1 = _mm_sub_ps(prod1_re, prod1_im);
-            let add1 = _mm_add_ps(prod1_re, prod1_im);
-            let t1 = _mm_or_ps(
-                _mm_and_ps(select_odd, add1),
-                _mm_andnot_ps(select_odd, sub1),
-            );
-
-            // Complex multiply: t2 = w2 * z2
-            let z2_re = _mm_shuffle_ps(z2, z2, 0b10_10_00_00);
-            let z2_im = _mm_shuffle_ps(z2, z2, 0b11_11_01_01);
-            let w2_swap = _mm_shuffle_ps(w2, w2, 0b10_11_00_01);
-            let prod2_re = _mm_mul_ps(w2, z2_re);
-            let prod2_im = _mm_mul_ps(w2_swap, z2_im);
-            let sub2 = _mm_sub_ps(prod2_re, prod2_im);
-            let add2 = _mm_add_ps(prod2_re, prod2_im);
-            let t2 = _mm_or_ps(
-                _mm_and_ps(select_odd, add2),
-                _mm_andnot_ps(select_odd, sub2),
-            );
-
-            // Complex multiply: t3 = w3 * z3
-            let z3_re = _mm_shuffle_ps(z3, z3, 0b10_10_00_00);
-            let z3_im = _mm_shuffle_ps(z3, z3, 0b11_11_01_01);
-            let w3_swap = _mm_shuffle_ps(w3, w3, 0b10_11_00_01);
-            let prod3_re = _mm_mul_ps(w3, z3_re);
-            let prod3_im = _mm_mul_ps(w3_swap, z3_im);
-            let sub3 = _mm_sub_ps(prod3_re, prod3_im);
-            let add3 = _mm_add_ps(prod3_re, prod3_im);
-            let t3 = _mm_or_ps(
-                _mm_and_ps(select_odd, add3),
-                _mm_andnot_ps(select_odd, sub3),
-            );
+            // Complex multiply: t1 = w1 * z1, t2 = w2 * z2, t3 = w3 * z3
+            let t1 = complex_mul_sse2(w1, z1);
+            let t2 = complex_mul_sse2(w2, z2);
+            let t3 = complex_mul_sse2(w3, z3);
 
             // Radix-4 butterfly
             let a0 = _mm_add_ps(z0, t2);
@@ -94,10 +53,7 @@ pub(super) unsafe fn butterfly_radix4_stride1_sse2(
 
             // a3 = i * (t1 - t3)
             let t1_sub_t3 = _mm_sub_ps(t1, t3);
-            let a3_swapped = _mm_shuffle_ps(t1_sub_t3, t1_sub_t3, 0b10_11_00_01);
-            // XOR to flip sign of imaginary part: -0.0 has sign bit set.
-            let sign_mask = _mm_set_ps(-0.0, 0.0, -0.0, 0.0);
-            let a3 = _mm_xor_ps(a3_swapped, sign_mask);
+            let a3 = complex_mul_i_sse2(t1_sub_t3, neg_imag_mask);
 
             // Final butterfly outputs
             let out0 = _mm_add_ps(a0, a2);
@@ -176,6 +132,8 @@ pub(super) unsafe fn butterfly_radix4_generic_sse2(
     let simd_iters = (quarter_samples >> 1) << 1;
 
     unsafe {
+        let neg_imag_mask = load_neg_imag_mask_sse2();
+
         for i in (0..simd_iters).step_by(2) {
             // Calculate twiddle indices.
             let k0 = i % stride;
@@ -195,62 +153,16 @@ pub(super) unsafe fn butterfly_radix4_generic_sse2(
             let z3_ptr = src.as_ptr().add(i + quarter_samples * 3) as *const f32;
             let z3 = _mm_loadu_ps(z3_ptr);
 
-            // Load 6 twiddles contiguously.
+            // Load prepackaged twiddles directly (no shuffle needed).
             let tw_ptr = stage_twiddles.as_ptr().add(i * 3) as *const f32;
-            let tw_0 = _mm_loadu_ps(tw_ptr);
-            let tw_1 = _mm_loadu_ps(tw_ptr.add(4));
-            let tw_2 = _mm_loadu_ps(tw_ptr.add(8));
+            let w1 = _mm_loadu_ps(tw_ptr); // w1[i], w1[i+1]
+            let w2 = _mm_loadu_ps(tw_ptr.add(4)); // w2[i], w2[i+1]
+            let w3 = _mm_loadu_ps(tw_ptr.add(8)); // w3[i], w3[i+1]
 
-            // Extract w1, w2, w3 using shuffle_pd for 64-bit element selection.
-            let tw_0_pd = _mm_castps_pd(tw_0);
-            let tw_1_pd = _mm_castps_pd(tw_1);
-            let tw_2_pd = _mm_castps_pd(tw_2);
-
-            let w1 = _mm_castpd_ps(_mm_shuffle_pd(tw_0_pd, tw_1_pd, 0b10));
-            let w2 = _mm_castpd_ps(_mm_shuffle_pd(tw_0_pd, tw_2_pd, 0b01));
-            let w3 = _mm_castpd_ps(_mm_shuffle_pd(tw_1_pd, tw_2_pd, 0b10));
-
-            // Emulate addsub
-            let select_odd = _mm_castsi128_ps(_mm_set_epi32(-1, 0, -1, 0));
-
-            // Complex multiply: t1 = w1 * z1
-            let z1_re = _mm_shuffle_ps(z1, z1, 0b10_10_00_00);
-            let z1_im = _mm_shuffle_ps(z1, z1, 0b11_11_01_01);
-            let w1_swap = _mm_shuffle_ps(w1, w1, 0b10_11_00_01);
-            let prod1_re = _mm_mul_ps(w1, z1_re);
-            let prod1_im = _mm_mul_ps(w1_swap, z1_im);
-            let sub1 = _mm_sub_ps(prod1_re, prod1_im);
-            let add1 = _mm_add_ps(prod1_re, prod1_im);
-            let t1 = _mm_or_ps(
-                _mm_and_ps(select_odd, add1),
-                _mm_andnot_ps(select_odd, sub1),
-            );
-
-            // Complex multiply: t2 = w2 * z2
-            let z2_re = _mm_shuffle_ps(z2, z2, 0b10_10_00_00);
-            let z2_im = _mm_shuffle_ps(z2, z2, 0b11_11_01_01);
-            let w2_swap = _mm_shuffle_ps(w2, w2, 0b10_11_00_01);
-            let prod2_re = _mm_mul_ps(w2, z2_re);
-            let prod2_im = _mm_mul_ps(w2_swap, z2_im);
-            let sub2 = _mm_sub_ps(prod2_re, prod2_im);
-            let add2 = _mm_add_ps(prod2_re, prod2_im);
-            let t2 = _mm_or_ps(
-                _mm_and_ps(select_odd, add2),
-                _mm_andnot_ps(select_odd, sub2),
-            );
-
-            // Complex multiply: t3 = w3 * z3
-            let z3_re = _mm_shuffle_ps(z3, z3, 0b10_10_00_00);
-            let z3_im = _mm_shuffle_ps(z3, z3, 0b11_11_01_01);
-            let w3_swap = _mm_shuffle_ps(w3, w3, 0b10_11_00_01);
-            let prod3_re = _mm_mul_ps(w3, z3_re);
-            let prod3_im = _mm_mul_ps(w3_swap, z3_im);
-            let sub3 = _mm_sub_ps(prod3_re, prod3_im);
-            let add3 = _mm_add_ps(prod3_re, prod3_im);
-            let t3 = _mm_or_ps(
-                _mm_and_ps(select_odd, add3),
-                _mm_andnot_ps(select_odd, sub3),
-            );
+            // Complex multiply: t1 = w1 * z1, t2 = w2 * z2, t3 = w3 * z3
+            let t1 = complex_mul_sse2(w1, z1);
+            let t2 = complex_mul_sse2(w2, z2);
+            let t3 = complex_mul_sse2(w3, z3);
 
             // Radix-4 butterfly.
             let a0 = _mm_add_ps(z0, t2);
@@ -259,10 +171,7 @@ pub(super) unsafe fn butterfly_radix4_generic_sse2(
 
             // a3 = i * (t1 - t3)
             let t1_sub_t3 = _mm_sub_ps(t1, t3);
-            let a3_swapped = _mm_shuffle_ps(t1_sub_t3, t1_sub_t3, 0b10_11_00_01);
-            // XOR to flip sign of imaginary part: -0.0 has sign bit set.
-            let sign_mask = _mm_set_ps(-0.0, 0.0, -0.0, 0.0);
-            let a3 = _mm_xor_ps(a3_swapped, sign_mask);
+            let a3 = complex_mul_i_sse2(t1_sub_t3, neg_imag_mask);
 
             // Final butterfly outputs.
             let out0 = _mm_add_ps(a0, a2);

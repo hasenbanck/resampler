@@ -1,4 +1,4 @@
-use crate::fft::Complex32;
+use crate::fft::{Complex32, butterflies::ops::complex_mul_avx};
 
 /// Performs a single radix-2 Stockham butterfly stage for stride=1 (out-of-place, AVX+FMA).
 ///
@@ -31,12 +31,8 @@ pub(super) unsafe fn butterfly_radix2_stride1_avx_fma(
             let tw_ptr = stage_twiddles.as_ptr().add(i) as *const f32;
             let tw = _mm256_loadu_ps(tw_ptr);
 
-            // Complex multiply: t = tw * b using FMA
-            let b_re = _mm256_moveldup_ps(b); // [b0.re, b0.re, b1.re, b1.re, ...]
-            let b_im = _mm256_movehdup_ps(b); // [b0.im, b0.im, b1.im, b1.im, ...]
-            let tw_swap = _mm256_permute_ps(tw, 0b10_11_00_01); // Swap re/im
-            let prod_im = _mm256_mul_ps(tw_swap, b_im);
-            let t = _mm256_fmaddsub_ps(tw, b_re, prod_im);
+            // Complex multiply: t = tw * b
+            let t = complex_mul_avx(tw, b);
 
             // Butterfly: out_top = a + t, out_bot = a - t
             let out_top = _mm256_add_ps(a, t);
@@ -112,12 +108,8 @@ pub(super) unsafe fn butterfly_radix2_generic_avx_fma(
             let tw_ptr = stage_twiddles.as_ptr().add(i) as *const f32;
             let tw = _mm256_loadu_ps(tw_ptr);
 
-            // Complex multiply: t = tw * b using FMA.
-            let b_re = _mm256_moveldup_ps(b); // [b0.re, b0.re, b1.re, b1.re, ...]
-            let b_im = _mm256_movehdup_ps(b); // [b0.im, b0.im, b1.im, b1.im, ...]
-            let tw_swap = _mm256_permute_ps(tw, 0b10_11_00_01); // Swap re/im
-            let prod_im = _mm256_mul_ps(tw_swap, b_im);
-            let t = _mm256_fmaddsub_ps(tw, b_re, prod_im);
+            // Complex multiply: t = tw * b
+            let t = complex_mul_avx(tw, b);
 
             // Butterfly: out_top = a + t, out_bot = a - t
             let out_top = _mm256_add_ps(a, t);

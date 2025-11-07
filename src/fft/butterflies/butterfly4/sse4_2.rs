@@ -1,4 +1,7 @@
-use crate::fft::Complex32;
+use crate::fft::{
+    Complex32,
+    butterflies::ops::{complex_mul_i_sse4_2, complex_mul_sse4_2, load_neg_imag_mask_sse4_2},
+};
 
 /// Performs a single radix-4 Stockham butterfly stage for stride=1 (out-of-place, SSE4.2).
 ///
@@ -17,6 +20,8 @@ pub(super) unsafe fn butterfly_radix4_stride1_sse4_2(
     let simd_iters = (quarter_samples >> 1) << 1;
 
     unsafe {
+        let neg_imag_mask = load_neg_imag_mask_sse4_2();
+
         for i in (0..simd_iters).step_by(2) {
             let z0_ptr = src.as_ptr().add(i) as *const f32;
             let z0 = _mm_loadu_ps(z0_ptr);
@@ -30,57 +35,25 @@ pub(super) unsafe fn butterfly_radix4_stride1_sse4_2(
             let z3_ptr = src.as_ptr().add(i + quarter_samples * 3) as *const f32;
             let z3 = _mm_loadu_ps(z3_ptr);
 
-            // Load 6 twiddles contiguously.
+            // Load prepackaged twiddles directly (no shuffle needed).
             let tw_ptr = stage_twiddles.as_ptr().add(i * 3) as *const f32;
-            let tw_0 = _mm_loadu_ps(tw_ptr); // [w1[0], w2[0]]
-            let tw_1 = _mm_loadu_ps(tw_ptr.add(4)); // [w3[0], w1[1]]
-            let tw_2 = _mm_loadu_ps(tw_ptr.add(8)); // [w2[1], w3[1]]
+            let w1 = _mm_loadu_ps(tw_ptr); // w1[i], w1[i+1]
+            let w2 = _mm_loadu_ps(tw_ptr.add(4)); // w2[i], w2[i+1]
+            let w3 = _mm_loadu_ps(tw_ptr.add(8)); // w3[i], w3[i+1]
 
-            // Extract w1, w2, w3 using shuffle_pd for 64-bit element selection.
-            let tw_0_pd = _mm_castps_pd(tw_0);
-            let tw_1_pd = _mm_castps_pd(tw_1);
-            let tw_2_pd = _mm_castps_pd(tw_2);
-
-            let w1 = _mm_castpd_ps(_mm_shuffle_pd(tw_0_pd, tw_1_pd, 0b10)); // [w1[0], w1[1]]
-            let w2 = _mm_castpd_ps(_mm_shuffle_pd(tw_0_pd, tw_2_pd, 0b01)); // [w2[0], w2[1]]
-            let w3 = _mm_castpd_ps(_mm_shuffle_pd(tw_1_pd, tw_2_pd, 0b10)); // [w3[0], w3[1]]
-
-            // Complex multiply: t1 = w1 * z1
-            let z1_re = _mm_moveldup_ps(z1);
-            let z1_im = _mm_movehdup_ps(z1);
-            let w1_swap = _mm_shuffle_ps(w1, w1, 0b10_11_00_01);
-            let prod1_re = _mm_mul_ps(w1, z1_re);
-            let prod1_im = _mm_mul_ps(w1_swap, z1_im);
-            let t1 = _mm_addsub_ps(prod1_re, prod1_im);
-
-            // Complex multiply: t2 = w2 * z2
-            let z2_re = _mm_moveldup_ps(z2);
-            let z2_im = _mm_movehdup_ps(z2);
-            let w2_swap = _mm_shuffle_ps(w2, w2, 0b10_11_00_01);
-            let prod2_re = _mm_mul_ps(w2, z2_re);
-            let prod2_im = _mm_mul_ps(w2_swap, z2_im);
-            let t2 = _mm_addsub_ps(prod2_re, prod2_im);
-
-            // Complex multiply: t3 = w3 * z3
-            let z3_re = _mm_moveldup_ps(z3);
-            let z3_im = _mm_movehdup_ps(z3);
-            let w3_swap = _mm_shuffle_ps(w3, w3, 0b10_11_00_01);
-            let prod3_re = _mm_mul_ps(w3, z3_re);
-            let prod3_im = _mm_mul_ps(w3_swap, z3_im);
-            let t3 = _mm_addsub_ps(prod3_re, prod3_im);
+            // Complex multiply.
+            let t1 = complex_mul_sse4_2(w1, z1);
+            let t2 = complex_mul_sse4_2(w2, z2);
+            let t3 = complex_mul_sse4_2(w3, z3);
 
             // Radix-4 butterfly
             let a0 = _mm_add_ps(z0, t2);
             let a1 = _mm_sub_ps(z0, t2);
             let a2 = _mm_add_ps(t1, t3);
 
-            // a3 = i * (t1 - t3) = [im, -re] (swap and negate real part)
+            // a3 = i * (t1 - t3)
             let t1_sub_t3 = _mm_sub_ps(t1, t3);
-            let a3_swapped = _mm_shuffle_ps(t1_sub_t3, t1_sub_t3, 0b10_11_00_01);
-            let a3_neg = _mm_sub_ps(_mm_setzero_ps(), a3_swapped);
-            // Blend: select lanes 0,2 from a3_swapped (positive im), lanes 1,3 from a3_neg (negative re)
-            // Blend mask: 0b1010 = select second operand (a3_neg) for lanes 1,3
-            let a3 = _mm_blend_ps(a3_swapped, a3_neg, 0b1010);
+            let a3 = complex_mul_i_sse4_2(t1_sub_t3, neg_imag_mask);
 
             // Final butterfly outputs
             let out0 = _mm_add_ps(a0, a2);
@@ -156,6 +129,8 @@ pub(super) unsafe fn butterfly_radix4_generic_sse4_2(
     let simd_iters = (quarter_samples >> 1) << 1;
 
     unsafe {
+        let neg_imag_mask = load_neg_imag_mask_sse4_2();
+
         for i in (0..simd_iters).step_by(2) {
             // Calculate twiddle indices.
             let k0 = i % stride;
@@ -175,56 +150,25 @@ pub(super) unsafe fn butterfly_radix4_generic_sse4_2(
             let z3_ptr = src.as_ptr().add(i + quarter_samples * 3) as *const f32;
             let z3 = _mm_loadu_ps(z3_ptr);
 
-            // Load 6 twiddles contiguously.
+            // Load prepackaged twiddles directly (no shuffle needed).
             let tw_ptr = stage_twiddles.as_ptr().add(i * 3) as *const f32;
-            let tw_0 = _mm_loadu_ps(tw_ptr);
-            let tw_1 = _mm_loadu_ps(tw_ptr.add(4));
-            let tw_2 = _mm_loadu_ps(tw_ptr.add(8));
+            let w1 = _mm_loadu_ps(tw_ptr); // w1[i], w1[i+1]
+            let w2 = _mm_loadu_ps(tw_ptr.add(4)); // w2[i], w2[i+1]
+            let w3 = _mm_loadu_ps(tw_ptr.add(8)); // w3[i], w3[i+1]
 
-            // Extract w1, w2, w3 using shuffle_pd for 64-bit element selection.
-            let tw_0_pd = _mm_castps_pd(tw_0);
-            let tw_1_pd = _mm_castps_pd(tw_1);
-            let tw_2_pd = _mm_castps_pd(tw_2);
-
-            let w1 = _mm_castpd_ps(_mm_shuffle_pd(tw_0_pd, tw_1_pd, 0b10));
-            let w2 = _mm_castpd_ps(_mm_shuffle_pd(tw_0_pd, tw_2_pd, 0b01));
-            let w3 = _mm_castpd_ps(_mm_shuffle_pd(tw_1_pd, tw_2_pd, 0b10));
-
-            // Complex multiply: t1 = w1 * z1
-            let z1_re = _mm_moveldup_ps(z1);
-            let z1_im = _mm_movehdup_ps(z1);
-            let w1_swap = _mm_shuffle_ps(w1, w1, 0b10_11_00_01);
-            let prod1_re = _mm_mul_ps(w1, z1_re);
-            let prod1_im = _mm_mul_ps(w1_swap, z1_im);
-            let t1 = _mm_addsub_ps(prod1_re, prod1_im);
-
-            // Complex multiply: t2 = w2 * z2
-            let z2_re = _mm_moveldup_ps(z2);
-            let z2_im = _mm_movehdup_ps(z2);
-            let w2_swap = _mm_shuffle_ps(w2, w2, 0b10_11_00_01);
-            let prod2_re = _mm_mul_ps(w2, z2_re);
-            let prod2_im = _mm_mul_ps(w2_swap, z2_im);
-            let t2 = _mm_addsub_ps(prod2_re, prod2_im);
-
-            // Complex multiply: t3 = w3 * z3
-            let z3_re = _mm_moveldup_ps(z3);
-            let z3_im = _mm_movehdup_ps(z3);
-            let w3_swap = _mm_shuffle_ps(w3, w3, 0b10_11_00_01);
-            let prod3_re = _mm_mul_ps(w3, z3_re);
-            let prod3_im = _mm_mul_ps(w3_swap, z3_im);
-            let t3 = _mm_addsub_ps(prod3_re, prod3_im);
+            // Complex multiply.
+            let t1 = complex_mul_sse4_2(w1, z1);
+            let t2 = complex_mul_sse4_2(w2, z2);
+            let t3 = complex_mul_sse4_2(w3, z3);
 
             // Radix-4 butterfly.
             let a0 = _mm_add_ps(z0, t2);
             let a1 = _mm_sub_ps(z0, t2);
             let a2 = _mm_add_ps(t1, t3);
 
-            // a3 = i * (t1 - t3) = [im, -re] (swap and negate real part)
+            // a3 = i * (t1 - t3)
             let t1_sub_t3 = _mm_sub_ps(t1, t3);
-            let a3_swapped = _mm_shuffle_ps(t1_sub_t3, t1_sub_t3, 0b10_11_00_01);
-            let a3_neg = _mm_sub_ps(_mm_setzero_ps(), a3_swapped);
-            // Blend: select lanes 0,2 from a3_swapped (positive im), lanes 1,3 from a3_neg (negative re)
-            let a3 = _mm_blend_ps(a3_swapped, a3_neg, 0b1010);
+            let a3 = complex_mul_i_sse4_2(t1_sub_t3, neg_imag_mask);
 
             // Final butterfly outputs.
             let out0 = _mm_add_ps(a0, a2);

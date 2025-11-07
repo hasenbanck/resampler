@@ -1,3 +1,6 @@
+use core::arch::aarch64::*;
+
+use super::super::ops::{complex_mul, complex_mul_i, load_neg_imag_mask};
 use crate::fft::Complex32;
 
 /// Performs a single radix-4 Stockham butterfly stage for stride=1 (out-of-place, NEON).
@@ -10,23 +13,12 @@ pub(super) unsafe fn butterfly_radix4_stride1_neon(
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
 ) {
-    use core::arch::aarch64::*;
-
     let samples = src.len();
     let quarter_samples = samples >> 2;
     let simd_iters = (quarter_samples >> 1) << 1;
 
-    // Sign flip mask for complex multiplication.
-    #[repr(align(16))]
-    struct AlignedMask([u32; 4]);
-    const SIGN_FLIP_MASK: AlignedMask =
-        AlignedMask([0x80000000, 0x00000000, 0x80000000, 0x00000000]);
-    const NEG_IMAG_MASK: AlignedMask =
-        AlignedMask([0x00000000, 0x80000000, 0x00000000, 0x80000000]);
-
     unsafe {
-        let sign_flip = vreinterpretq_f32_u32(vld1q_u32(SIGN_FLIP_MASK.0.as_ptr()));
-        let neg_imag = vreinterpretq_f32_u32(vld1q_u32(NEG_IMAG_MASK.0.as_ptr()));
+        let neg_imag = load_neg_imag_mask();
 
         for i in (0..simd_iters).step_by(2) {
             // For stride=1: k=0, so j = 4*i (simplified indexing, outputs are sequential).
@@ -45,73 +37,24 @@ pub(super) unsafe fn butterfly_radix4_stride1_neon(
             let z3_ptr = src.as_ptr().add(i + quarter_samples * 3) as *const f32;
             let z3 = vld1q_f32(z3_ptr);
 
-            // Load 6 twiddles contiguously (2 iterations × 3 twiddles each).
+            // Load pre-packaged twiddles: [w1[i..i+2], w2[i..i+2], w3[i..i+2]]
             let tw_ptr = stage_twiddles.as_ptr().add(i * 3) as *const f32;
-            let tw_01 = vld1q_f32(tw_ptr); // w1[0], w2[0]
-            let tw_23 = vld1q_f32(tw_ptr.add(4)); // w3[0], w1[1]
-            let tw_45 = vld1q_f32(tw_ptr.add(8)); // w2[1], w3[1]
+            let w1 = vld1q_f32(tw_ptr); // w1[i], w1[i+1]
+            let w2 = vld1q_f32(tw_ptr.add(4)); // w2[i], w2[i+1]
+            let w3 = vld1q_f32(tw_ptr.add(8)); // w3[i], w3[i+1]
 
-            // Extract individual twiddles.
-            let w1_low = vget_low_f32(tw_01); // w1[0]
-            let w1_high = vget_high_f32(tw_23); // w1[1]
-            let w1 = vcombine_f32(w1_low, w1_high);
-
-            let w2_low = vget_high_f32(tw_01); // w2[0]
-            let w2_high = vget_low_f32(tw_45); // w2[1]
-            let w2 = vcombine_f32(w2_low, w2_high);
-
-            let w3_low = vget_low_f32(tw_23); // w3[0]
-            let w3_high = vget_high_f32(tw_45); // w3[1]
-            let w3 = vcombine_f32(w3_low, w3_high);
-
-            // Complex multiply: t1 = w1 * z1
-            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
-            let w1_transposed = vtrnq_f32(w1, w1);
-            let w1_re_dup = w1_transposed.0;
-            let w1_im_dup = w1_transposed.1;
-            let z1_swap = vrev64q_f32(z1);
-            let w1_im_signed = vreinterpretq_f32_u32(veorq_u32(
-                vreinterpretq_u32_f32(w1_im_dup),
-                vreinterpretq_u32_f32(sign_flip),
-            ));
-            let t1 = vmlaq_f32(vmulq_f32(w1_re_dup, z1), w1_im_signed, z1_swap);
-
-            // Complex multiply: t2 = w2 * z2
-            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
-            let w2_transposed = vtrnq_f32(w2, w2);
-            let w2_re_dup = w2_transposed.0;
-            let w2_im_dup = w2_transposed.1;
-            let z2_swap = vrev64q_f32(z2);
-            let w2_im_signed = vreinterpretq_f32_u32(veorq_u32(
-                vreinterpretq_u32_f32(w2_im_dup),
-                vreinterpretq_u32_f32(sign_flip),
-            ));
-            let t2 = vmlaq_f32(vmulq_f32(w2_re_dup, z2), w2_im_signed, z2_swap);
-
-            // Complex multiply: t3 = w3 * z3
-            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
-            let w3_transposed = vtrnq_f32(w3, w3);
-            let w3_re_dup = w3_transposed.0;
-            let w3_im_dup = w3_transposed.1;
-            let z3_swap = vrev64q_f32(z3);
-            let w3_im_signed = vreinterpretq_f32_u32(veorq_u32(
-                vreinterpretq_u32_f32(w3_im_dup),
-                vreinterpretq_u32_f32(sign_flip),
-            ));
-            let t3 = vmlaq_f32(vmulq_f32(w3_re_dup, z3), w3_im_signed, z3_swap);
+            let t1 = complex_mul(z1, w1);
+            let t2 = complex_mul(z2, w2);
+            let t3 = complex_mul(z3, w3);
 
             // Radix-4 butterfly.
             let a0 = vaddq_f32(z0, t2);
             let a1 = vsubq_f32(z0, t2);
             let a2 = vaddq_f32(t1, t3);
 
-            // a3 = i * (t1 - t3) = swap(t1 - t3) * [-1, 1, -1, 1]
+            // a3 = i * (t1 - t3)
             let t1_sub_t3 = vsubq_f32(t1, t3);
-            let a3_swapped = vrev64q_f32(t1_sub_t3); // Swap re and im
-            let a3 = vreinterpretq_f32_u32(veorq_u32(
-                vreinterpretq_u32_f32(a3_swapped),
-                vreinterpretq_u32_f32(neg_imag),
-            ));
+            let a3 = complex_mul_i(t1_sub_t3, neg_imag);
 
             // Final butterfly outputs.
             let out0 = vaddq_f32(a0, a2);
@@ -195,23 +138,12 @@ pub(super) unsafe fn butterfly_radix4_generic_neon(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
-    use core::arch::aarch64::*;
-
     let samples = src.len();
     let quarter_samples = samples >> 2;
     let simd_iters = (quarter_samples >> 1) << 1;
 
-    // Sign flip mask for complex multiplication.
-    #[repr(align(16))]
-    struct AlignedMask([u32; 4]);
-    const SIGN_FLIP_MASK: AlignedMask =
-        AlignedMask([0x80000000, 0x00000000, 0x80000000, 0x00000000]);
-    const NEG_IMAG_MASK: AlignedMask =
-        AlignedMask([0x00000000, 0x80000000, 0x00000000, 0x80000000]);
-
     unsafe {
-        let sign_flip = vreinterpretq_f32_u32(vld1q_u32(SIGN_FLIP_MASK.0.as_ptr()));
-        let neg_imag = vreinterpretq_f32_u32(vld1q_u32(NEG_IMAG_MASK.0.as_ptr()));
+        let neg_imag = load_neg_imag_mask();
 
         for i in (0..simd_iters).step_by(2) {
             // Calculate twiddle indices.
@@ -232,60 +164,15 @@ pub(super) unsafe fn butterfly_radix4_generic_neon(
             let z3_ptr = src.as_ptr().add(i + quarter_samples * 3) as *const f32;
             let z3 = vld1q_f32(z3_ptr);
 
-            // Load 6 twiddles contiguously.
+            // Load pre-packaged twiddles: [w1[i..i+2], w2[i..i+2], w3[i..i+2]]
             let tw_ptr = stage_twiddles.as_ptr().add(i * 3) as *const f32;
-            let tw_01 = vld1q_f32(tw_ptr);
-            let tw_23 = vld1q_f32(tw_ptr.add(4));
-            let tw_45 = vld1q_f32(tw_ptr.add(8));
+            let w1 = vld1q_f32(tw_ptr); // w1[i], w1[i+1]
+            let w2 = vld1q_f32(tw_ptr.add(4)); // w2[i], w2[i+1]
+            let w3 = vld1q_f32(tw_ptr.add(8)); // w3[i], w3[i+1]
 
-            // Extract individual twiddles.
-            let w1_low = vget_low_f32(tw_01);
-            let w1_high = vget_high_f32(tw_23);
-            let w1 = vcombine_f32(w1_low, w1_high);
-
-            let w2_low = vget_high_f32(tw_01);
-            let w2_high = vget_low_f32(tw_45);
-            let w2 = vcombine_f32(w2_low, w2_high);
-
-            let w3_low = vget_low_f32(tw_23);
-            let w3_high = vget_high_f32(tw_45);
-            let w3 = vcombine_f32(w3_low, w3_high);
-
-            // Complex multiply: t1 = w1 * z1
-            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
-            let w1_transposed = vtrnq_f32(w1, w1);
-            let w1_re_dup = w1_transposed.0;
-            let w1_im_dup = w1_transposed.1;
-            let z1_swap = vrev64q_f32(z1);
-            let w1_im_signed = vreinterpretq_f32_u32(veorq_u32(
-                vreinterpretq_u32_f32(w1_im_dup),
-                vreinterpretq_u32_f32(sign_flip),
-            ));
-            let t1 = vmlaq_f32(vmulq_f32(w1_re_dup, z1), w1_im_signed, z1_swap);
-
-            // Complex multiply: t2 = w2 * z2
-            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
-            let w2_transposed = vtrnq_f32(w2, w2);
-            let w2_re_dup = w2_transposed.0;
-            let w2_im_dup = w2_transposed.1;
-            let z2_swap = vrev64q_f32(z2);
-            let w2_im_signed = vreinterpretq_f32_u32(veorq_u32(
-                vreinterpretq_u32_f32(w2_im_dup),
-                vreinterpretq_u32_f32(sign_flip),
-            ));
-            let t2 = vmlaq_f32(vmulq_f32(w2_re_dup, z2), w2_im_signed, z2_swap);
-
-            // Complex multiply: t3 = w3 * z3
-            // TODO: Once ARMv8.3+ FCMLA instructions are stabilized, use vcmlaq_f32/vcmlaq_rot90_f32.
-            let w3_transposed = vtrnq_f32(w3, w3);
-            let w3_re_dup = w3_transposed.0;
-            let w3_im_dup = w3_transposed.1;
-            let z3_swap = vrev64q_f32(z3);
-            let w3_im_signed = vreinterpretq_f32_u32(veorq_u32(
-                vreinterpretq_u32_f32(w3_im_dup),
-                vreinterpretq_u32_f32(sign_flip),
-            ));
-            let t3 = vmlaq_f32(vmulq_f32(w3_re_dup, z3), w3_im_signed, z3_swap);
+            let t1 = complex_mul(z1, w1);
+            let t2 = complex_mul(z2, w2);
+            let t3 = complex_mul(z3, w3);
 
             // Radix-4 butterfly.
             let a0 = vaddq_f32(z0, t2);
@@ -294,11 +181,7 @@ pub(super) unsafe fn butterfly_radix4_generic_neon(
 
             // a3 = i * (t1 - t3)
             let t1_sub_t3 = vsubq_f32(t1, t3);
-            let a3_swapped = vrev64q_f32(t1_sub_t3);
-            let a3 = vreinterpretq_f32_u32(veorq_u32(
-                vreinterpretq_u32_f32(a3_swapped),
-                vreinterpretq_u32_f32(neg_imag),
-            ));
+            let a3 = complex_mul_i(t1_sub_t3, neg_imag);
 
             // Final butterfly outputs.
             let out0 = vaddq_f32(a0, a2);

@@ -1,4 +1,4 @@
-use crate::fft::Complex32;
+use crate::fft::{Complex32, butterflies::ops::complex_mul_sse4_2};
 
 /// Performs a single radix-2 Stockham butterfly stage for stride=1 (out-of-place, SSE4.2).
 ///
@@ -32,16 +32,7 @@ pub(super) unsafe fn butterfly_radix2_stride1_sse4_2(
             let tw = _mm_loadu_ps(tw_ptr);
 
             // Complex multiply: t = tw * b
-            // We need to compute: (tw.re * b.re - tw.im * b.im) + i(tw.re * b.im + tw.im * b.re)
-            let b_re = _mm_moveldup_ps(b); // [b0.re, b0.re, b1.re, b1.re]
-            let b_im = _mm_movehdup_ps(b); // [b0.im, b0.im, b1.im, b1.im]
-            let tw_swap = _mm_shuffle_ps(tw, tw, 0b10_11_00_01); // Swap re/im
-
-            let prod_re = _mm_mul_ps(tw, b_re); // tw * b_re
-            let prod_im = _mm_mul_ps(tw_swap, b_im); // tw_swap * b_im
-
-            // [re0-im0, im0+re0, re1-im1, im1+re1]
-            let t = _mm_addsub_ps(prod_re, prod_im);
+            let t = complex_mul_sse4_2(tw, b);
 
             // Butterfly: out_top = a + t, out_bot = a - t
             let out_top = _mm_add_ps(a, t);
@@ -109,14 +100,7 @@ pub(super) unsafe fn butterfly_radix2_generic_sse4_2(
             let tw = _mm_loadu_ps(tw_ptr);
 
             // Complex multiply: t = tw * b
-            let b_re = _mm_moveldup_ps(b); // [b0.re, b0.re, b1.re, b1.re]
-            let b_im = _mm_movehdup_ps(b); // [b0.im, b0.im, b1.im, b1.im]
-            let tw_swap = _mm_shuffle_ps(tw, tw, 0b10_11_00_01); // Swap re/im
-
-            let prod_re = _mm_mul_ps(tw, b_re);
-            let prod_im = _mm_mul_ps(tw_swap, b_im);
-
-            let t = _mm_addsub_ps(prod_re, prod_im);
+            let t = complex_mul_sse4_2(tw, b);
 
             // Butterfly: out_top = a + t, out_bot = a - t
             let out_top = _mm_add_ps(a, t);
