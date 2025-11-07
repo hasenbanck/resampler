@@ -113,7 +113,10 @@ pub(crate) fn butterfly_radix7_dispatch(
         }
     }
 
-    butterfly_radix7_scalar(src, dst, stage_twiddles, stride);
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
+    butterfly_radix7_scalar::<4>(src, dst, stage_twiddles, stride);
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma")))]
+    butterfly_radix7_scalar::<2>(src, dst, stage_twiddles, stride);
 }
 
 /// AVX+FMA dispatcher for p1 (stride=1) variant
@@ -131,7 +134,7 @@ pub(crate) fn butterfly_radix7_stride1_avx_fma_dispatch(
         return unsafe { avx::butterfly_radix7_stride1_avx_fma(src, dst, stage_twiddles) };
     }
 
-    butterfly_radix7_scalar(src, dst, stage_twiddles, 1);
+    butterfly_radix7_scalar::<4>(src, dst, stage_twiddles, 1);
 }
 
 /// AVX+FMA dispatcher for generic (stride>1) variant
@@ -150,7 +153,7 @@ pub(crate) fn butterfly_radix7_generic_avx_fma_dispatch(
         return unsafe { avx::butterfly_radix7_generic_avx_fma(src, dst, stage_twiddles, stride) };
     }
 
-    butterfly_radix7_scalar(src, dst, stage_twiddles, stride);
+    butterfly_radix7_scalar::<4>(src, dst, stage_twiddles, stride);
 }
 
 /// SSE2 dispatcher for p1 (stride=1) variant
@@ -168,7 +171,7 @@ pub(crate) fn butterfly_radix7_stride1_sse2_dispatch(
         return unsafe { sse2::butterfly_radix7_stride1_sse2(src, dst, stage_twiddles) };
     }
 
-    butterfly_radix7_scalar(src, dst, stage_twiddles, 1);
+    butterfly_radix7_scalar::<2>(src, dst, stage_twiddles, 1);
 }
 
 /// SSE2 dispatcher for generic (stride>1) variant
@@ -187,7 +190,7 @@ pub(crate) fn butterfly_radix7_generic_sse2_dispatch(
         return unsafe { sse2::butterfly_radix7_generic_sse2(src, dst, stage_twiddles, stride) };
     }
 
-    butterfly_radix7_scalar(src, dst, stage_twiddles, stride);
+    butterfly_radix7_scalar::<2>(src, dst, stage_twiddles, stride);
 }
 
 /// SSE4.2 dispatcher for p1 (stride=1) variant
@@ -205,7 +208,7 @@ pub(crate) fn butterfly_radix7_stride1_sse4_2_dispatch(
         return unsafe { sse4_2::butterfly_radix7_stride1_sse4_2(src, dst, stage_twiddles) };
     }
 
-    butterfly_radix7_scalar(src, dst, stage_twiddles, 1);
+    butterfly_radix7_scalar::<2>(src, dst, stage_twiddles, 1);
 }
 
 /// SSE4.2 dispatcher for generic (stride>1) variant
@@ -226,12 +229,12 @@ pub(crate) fn butterfly_radix7_generic_sse4_2_dispatch(
         };
     }
 
-    butterfly_radix7_scalar(src, dst, stage_twiddles, stride);
+    butterfly_radix7_scalar::<2>(src, dst, stage_twiddles, stride);
 }
 
 /// Performs a single radix-7 Stockham butterfly stage (out-of-place, scalar).
 #[inline(always)]
-fn butterfly_radix7_scalar(
+fn butterfly_radix7_scalar<const WIDTH: usize>(
     src: &[Complex32],
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
@@ -239,15 +242,96 @@ fn butterfly_radix7_scalar(
 ) {
     let samples = src.len();
     let seventh_samples = samples / 7;
+    let simd_iters = (seventh_samples / WIDTH) * WIDTH;
 
-    for i in 0..seventh_samples {
+    // Process SIMD-packed region.
+    for i in 0..simd_iters {
         let k = i % stride;
-        let w1 = stage_twiddles[i * 6];
-        let w2 = stage_twiddles[i * 6 + 1];
-        let w3 = stage_twiddles[i * 6 + 2];
-        let w4 = stage_twiddles[i * 6 + 3];
-        let w5 = stage_twiddles[i * 6 + 4];
-        let w6 = stage_twiddles[i * 6 + 5];
+        let group_idx = i / WIDTH;
+        let offset_in_group = i % WIDTH;
+        let tw_base = group_idx * (6 * WIDTH) + offset_in_group;
+        let w1 = stage_twiddles[tw_base];
+        let w2 = stage_twiddles[tw_base + WIDTH];
+        let w3 = stage_twiddles[tw_base + WIDTH * 2];
+        let w4 = stage_twiddles[tw_base + WIDTH * 3];
+        let w5 = stage_twiddles[tw_base + WIDTH * 4];
+        let w6 = stage_twiddles[tw_base + WIDTH * 5];
+
+        let z0 = src[i];
+        let z1 = src[i + seventh_samples];
+        let z2 = src[i + seventh_samples * 2];
+        let z3 = src[i + seventh_samples * 3];
+        let z4 = src[i + seventh_samples * 4];
+        let z5 = src[i + seventh_samples * 5];
+        let z6 = src[i + seventh_samples * 6];
+
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+        let t3 = w3.mul(&z3);
+        let t4 = w4.mul(&z4);
+        let t5 = w5.mul(&z5);
+        let t6 = w6.mul(&z6);
+
+        let sum_all = t1.add(&t2).add(&t3).add(&t4).add(&t5).add(&t6);
+
+        // Radix-7 DFT decomposition.
+        let a1 = t1.add(&t6);
+        let a2 = t2.add(&t5);
+        let a3 = t3.add(&t4);
+
+        let b1_re = t1.im - t6.im;
+        let b1_im = t6.re - t1.re;
+        let b2_re = t2.im - t5.im;
+        let b2_im = t5.re - t2.re;
+        let b3_re = t3.im - t4.im;
+        let b3_im = t4.re - t3.re;
+
+        let j = 7 * i - 6 * k;
+        dst[j] = z0.add(&sum_all);
+
+        for idx in 1..7 {
+            let (cos1, sin1, cos2, sin2, cos3, sin3) = match idx {
+                1 => (
+                    COS_2PI_7, SIN_2PI_7, COS_4PI_7, SIN_4PI_7, COS_6PI_7, SIN_6PI_7,
+                ),
+                2 => (
+                    COS_4PI_7, SIN_4PI_7, COS_6PI_7, -SIN_6PI_7, COS_2PI_7, -SIN_2PI_7,
+                ),
+                3 => (
+                    COS_6PI_7, SIN_6PI_7, COS_2PI_7, -SIN_2PI_7, COS_4PI_7, SIN_4PI_7,
+                ),
+                4 => (
+                    COS_6PI_7, -SIN_6PI_7, COS_2PI_7, SIN_2PI_7, COS_4PI_7, -SIN_4PI_7,
+                ),
+                5 => (
+                    COS_4PI_7, -SIN_4PI_7, COS_6PI_7, SIN_6PI_7, COS_2PI_7, SIN_2PI_7,
+                ),
+                6 => (
+                    COS_2PI_7, -SIN_2PI_7, COS_4PI_7, -SIN_4PI_7, COS_6PI_7, -SIN_6PI_7,
+                ),
+                _ => unreachable!(),
+            };
+
+            let c_re = z0.re + cos1 * a1.re + cos2 * a2.re + cos3 * a3.re;
+            let c_im = z0.im + cos1 * a1.im + cos2 * a2.im + cos3 * a3.im;
+            let d_re = sin1 * b1_re + sin2 * b2_re + sin3 * b3_re;
+            let d_im = sin1 * b1_im + sin2 * b2_im + sin3 * b3_im;
+
+            dst[j + stride * idx] = Complex32::new(c_re + d_re, c_im + d_im);
+        }
+    }
+
+    // Process scalar tail.
+    let tail_offset = (simd_iters / WIDTH) * (6 * WIDTH);
+    for i in simd_iters..seventh_samples {
+        let k = i % stride;
+        let tail_idx = i - simd_iters;
+        let w1 = stage_twiddles[tail_offset + tail_idx * 6];
+        let w2 = stage_twiddles[tail_offset + tail_idx * 6 + 1];
+        let w3 = stage_twiddles[tail_offset + tail_idx * 6 + 2];
+        let w4 = stage_twiddles[tail_offset + tail_idx * 6 + 3];
+        let w5 = stage_twiddles[tail_offset + tail_idx * 6 + 4];
+        let w6 = stage_twiddles[tail_offset + tail_idx * 6 + 5];
 
         let z0 = src[i];
         let z1 = src[i + seventh_samples];
@@ -327,8 +411,9 @@ mod tests {
         )
     ))]
     fn test_butterfly_radix7_avx_fma_vs_scalar() {
+        use crate::fft::butterflies::tests::TestSimdWidth;
         crate::fft::butterflies::tests::test_butterfly_against_scalar(
-            butterfly_radix7_scalar,
+            |src, dst, twiddles, p| butterfly_radix7_scalar::<4>(src, dst, twiddles, p),
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     avx::butterfly_radix7_stride1_avx_fma(src, dst, twiddles);
@@ -338,6 +423,7 @@ mod tests {
             },
             7,
             6,
+            TestSimdWidth::Width4,
             "butterfly_radix7_avx_fma",
         );
     }
@@ -345,8 +431,9 @@ mod tests {
     #[test]
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     fn test_butterfly_radix7_sse2_vs_scalar() {
+        use crate::fft::butterflies::tests::TestSimdWidth;
         crate::fft::butterflies::tests::test_butterfly_against_scalar(
-            butterfly_radix7_scalar,
+            |src, dst, twiddles, p| butterfly_radix7_scalar::<2>(src, dst, twiddles, p),
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     sse2::butterfly_radix7_stride1_sse2(src, dst, twiddles);
@@ -356,6 +443,7 @@ mod tests {
             },
             7,
             6,
+            TestSimdWidth::Width2,
             "butterfly_radix7_sse2",
         );
     }
@@ -363,8 +451,9 @@ mod tests {
     #[test]
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.2"))]
     fn test_butterfly_radix7_sse4_2_vs_scalar() {
+        use crate::fft::butterflies::tests::TestSimdWidth;
         crate::fft::butterflies::tests::test_butterfly_against_scalar(
-            butterfly_radix7_scalar,
+            |src, dst, twiddles, p| butterfly_radix7_scalar::<2>(src, dst, twiddles, p),
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     sse4_2::butterfly_radix7_stride1_sse4_2(src, dst, twiddles);
@@ -374,6 +463,7 @@ mod tests {
             },
             7,
             6,
+            TestSimdWidth::Width2,
             "butterfly_radix7_sse4_2",
         );
     }
@@ -381,8 +471,9 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_butterfly_radix7_neon_vs_scalar() {
+        use crate::fft::butterflies::tests::TestSimdWidth;
         crate::fft::butterflies::tests::test_butterfly_against_scalar(
-            butterfly_radix7_scalar,
+            |src, dst, twiddles, p| butterfly_radix7_scalar::<2>(src, dst, twiddles, p),
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     neon::butterfly_radix7_stride1_neon(src, dst, twiddles);
@@ -392,6 +483,7 @@ mod tests {
             },
             7,
             6,
+            TestSimdWidth::Width2,
             "butterfly_radix7_neon",
         );
     }

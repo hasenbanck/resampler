@@ -1,5 +1,8 @@
 use super::{COS_2PI_5, COS_4PI_5, SIN_2PI_5, SIN_4PI_5};
-use crate::fft::Complex32;
+use crate::fft::{
+    Complex32,
+    butterflies::ops::{complex_mul_sse4_2, load_neg_imag_mask_sse4_2},
+};
 
 /// Performs a single radix-5 Stockham butterfly stage for stride=1 (out-of-place, SSE4.2).
 ///
@@ -23,6 +26,8 @@ pub(super) unsafe fn butterfly_radix5_stride1_sse4_2(
         let cos_4pi_5 = _mm_set1_ps(COS_4PI_5);
         let sin_4pi_5 = _mm_set1_ps(SIN_4PI_5);
 
+        let negate_im = load_neg_imag_mask_sse4_2();
+
         for i in (0..simd_iters).step_by(2) {
             // Load 2 complex numbers from each fifth.
             let z0_ptr = src.as_ptr().add(i) as *const f32;
@@ -40,50 +45,24 @@ pub(super) unsafe fn butterfly_radix5_stride1_sse4_2(
             let z4_ptr = src.as_ptr().add(i + fifth_samples * 4) as *const f32;
             let z4 = _mm_loadu_ps(z4_ptr);
 
-            // Load 8 twiddles contiguously: [w1[0], w2[0], w3[0], w4[0], w1[1], w2[1], w3[1], w4[1]].
+            // Load prepackaged twiddles directly (no shuffle needed).
             let tw_ptr = stage_twiddles.as_ptr().add(i * 4) as *const f32;
-            let tw01 = _mm_loadu_ps(tw_ptr); // [w1[0].re, w1[0].im, w2[0].re, w2[0].im]
-            let tw23 = _mm_loadu_ps(tw_ptr.add(4)); // [w3[0].re, w3[0].im, w4[0].re, w4[0].im]
-            let tw45 = _mm_loadu_ps(tw_ptr.add(8)); // [w1[1].re, w1[1].im, w2[1].re, w2[1].im]
-            let tw67 = _mm_loadu_ps(tw_ptr.add(12)); // [w3[1].re, w3[1].im, w4[1].re, w4[1].im]
-
-            // Extract w1, w2, w3, w4 using shuffle.
-            let w1 = _mm_shuffle_ps(tw01, tw45, 0b01_00_01_00); // [w1[0], w1[1]]
-            let w2 = _mm_shuffle_ps(tw01, tw45, 0b11_10_11_10); // [w2[0], w2[1]]
-            let w3 = _mm_shuffle_ps(tw23, tw67, 0b01_00_01_00); // [w3[0], w3[1]]
-            let w4 = _mm_shuffle_ps(tw23, tw67, 0b11_10_11_10); // [w4[0], w4[1]]
+            let w1 = _mm_loadu_ps(tw_ptr); // w1[i], w1[i+1]
+            let w2 = _mm_loadu_ps(tw_ptr.add(4)); // w2[i], w2[i+1]
+            let w3 = _mm_loadu_ps(tw_ptr.add(8)); // w3[i], w3[i+1]
+            let w4 = _mm_loadu_ps(tw_ptr.add(12)); // w4[i], w4[i+1]
 
             // Complex multiply: t1 = w1 * z1
-            let z1_re = _mm_moveldup_ps(z1);
-            let z1_im = _mm_movehdup_ps(z1);
-            let w1_swap = _mm_shuffle_ps(w1, w1, 0b10_11_00_01);
-            let prod1_re = _mm_mul_ps(w1, z1_re);
-            let prod1_im = _mm_mul_ps(w1_swap, z1_im);
-            let t1 = _mm_addsub_ps(prod1_re, prod1_im);
+            let t1 = complex_mul_sse4_2(w1, z1);
 
             // Complex multiply: t2 = w2 * z2
-            let z2_re = _mm_moveldup_ps(z2);
-            let z2_im = _mm_movehdup_ps(z2);
-            let w2_swap = _mm_shuffle_ps(w2, w2, 0b10_11_00_01);
-            let prod2_re = _mm_mul_ps(w2, z2_re);
-            let prod2_im = _mm_mul_ps(w2_swap, z2_im);
-            let t2 = _mm_addsub_ps(prod2_re, prod2_im);
+            let t2 = complex_mul_sse4_2(w2, z2);
 
             // Complex multiply: t3 = w3 * z3
-            let z3_re = _mm_moveldup_ps(z3);
-            let z3_im = _mm_movehdup_ps(z3);
-            let w3_swap = _mm_shuffle_ps(w3, w3, 0b10_11_00_01);
-            let prod3_re = _mm_mul_ps(w3, z3_re);
-            let prod3_im = _mm_mul_ps(w3_swap, z3_im);
-            let t3 = _mm_addsub_ps(prod3_re, prod3_im);
+            let t3 = complex_mul_sse4_2(w3, z3);
 
             // Complex multiply: t4 = w4 * z4
-            let z4_re = _mm_moveldup_ps(z4);
-            let z4_im = _mm_movehdup_ps(z4);
-            let w4_swap = _mm_shuffle_ps(w4, w4, 0b10_11_00_01);
-            let prod4_re = _mm_mul_ps(w4, z4_re);
-            let prod4_im = _mm_mul_ps(w4_swap, z4_im);
-            let t4 = _mm_addsub_ps(prod4_re, prod4_im);
+            let t4 = complex_mul_sse4_2(w4, z4);
 
             // Radix-5 DFT decomposition.
             // sum_all = t1 + t2 + t3 + t4
@@ -98,7 +77,6 @@ pub(super) unsafe fn butterfly_radix5_stride1_sse4_2(
             let t1_swap = _mm_shuffle_ps(t1, t1, 0b10_11_00_01);
             let t4_swap = _mm_shuffle_ps(t4, t4, 0b10_11_00_01);
             let b1_temp = _mm_sub_ps(t1_swap, t4_swap);
-            let negate_im = _mm_set_ps(-0.0, 0.0, -0.0, 0.0);
             let b1 = _mm_xor_ps(b1_temp, negate_im); // [b1_re, b1_im, b1_re, b1_im]
 
             // b2_re = t2.im - t3.im, b2_im = t3.re - t2.re
@@ -234,6 +212,8 @@ pub(super) unsafe fn butterfly_radix5_generic_sse4_2(
         let cos_4pi_5 = _mm_set1_ps(COS_4PI_5);
         let sin_4pi_5 = _mm_set1_ps(SIN_4PI_5);
 
+        let negate_im = load_neg_imag_mask_sse4_2();
+
         for i in (0..simd_iters).step_by(2) {
             let k0 = i % stride;
             let k1 = (i + 1) % stride;
@@ -254,50 +234,18 @@ pub(super) unsafe fn butterfly_radix5_generic_sse4_2(
             let z4_ptr = src.as_ptr().add(i + fifth_samples * 4) as *const f32;
             let z4 = _mm_loadu_ps(z4_ptr);
 
-            // Load 8 twiddles contiguously.
+            // Load prepackaged twiddles directly (no shuffle needed).
             let tw_ptr = stage_twiddles.as_ptr().add(i * 4) as *const f32;
-            let tw01 = _mm_loadu_ps(tw_ptr);
-            let tw23 = _mm_loadu_ps(tw_ptr.add(4));
-            let tw45 = _mm_loadu_ps(tw_ptr.add(8));
-            let tw67 = _mm_loadu_ps(tw_ptr.add(12));
+            let w1 = _mm_loadu_ps(tw_ptr); // w1[i], w1[i+1]
+            let w2 = _mm_loadu_ps(tw_ptr.add(4)); // w2[i], w2[i+1]
+            let w3 = _mm_loadu_ps(tw_ptr.add(8)); // w3[i], w3[i+1]
+            let w4 = _mm_loadu_ps(tw_ptr.add(12)); // w4[i], w4[i+1]
 
-            // Extract w1, w2, w3, w4.
-            let w1 = _mm_shuffle_ps(tw01, tw45, 0b01_00_01_00);
-            let w2 = _mm_shuffle_ps(tw01, tw45, 0b11_10_11_10);
-            let w3 = _mm_shuffle_ps(tw23, tw67, 0b01_00_01_00);
-            let w4 = _mm_shuffle_ps(tw23, tw67, 0b11_10_11_10);
-
-            // Complex multiply: t1 = w1 * z1
-            let z1_re = _mm_moveldup_ps(z1);
-            let z1_im = _mm_movehdup_ps(z1);
-            let w1_swap = _mm_shuffle_ps(w1, w1, 0b10_11_00_01);
-            let prod1_re = _mm_mul_ps(w1, z1_re);
-            let prod1_im = _mm_mul_ps(w1_swap, z1_im);
-            let t1 = _mm_addsub_ps(prod1_re, prod1_im);
-
-            // Complex multiply: t2 = w2 * z2
-            let z2_re = _mm_moveldup_ps(z2);
-            let z2_im = _mm_movehdup_ps(z2);
-            let w2_swap = _mm_shuffle_ps(w2, w2, 0b10_11_00_01);
-            let prod2_re = _mm_mul_ps(w2, z2_re);
-            let prod2_im = _mm_mul_ps(w2_swap, z2_im);
-            let t2 = _mm_addsub_ps(prod2_re, prod2_im);
-
-            // Complex multiply: t3 = w3 * z3
-            let z3_re = _mm_moveldup_ps(z3);
-            let z3_im = _mm_movehdup_ps(z3);
-            let w3_swap = _mm_shuffle_ps(w3, w3, 0b10_11_00_01);
-            let prod3_re = _mm_mul_ps(w3, z3_re);
-            let prod3_im = _mm_mul_ps(w3_swap, z3_im);
-            let t3 = _mm_addsub_ps(prod3_re, prod3_im);
-
-            // Complex multiply: t4 = w4 * z4
-            let z4_re = _mm_moveldup_ps(z4);
-            let z4_im = _mm_movehdup_ps(z4);
-            let w4_swap = _mm_shuffle_ps(w4, w4, 0b10_11_00_01);
-            let prod4_re = _mm_mul_ps(w4, z4_re);
-            let prod4_im = _mm_mul_ps(w4_swap, z4_im);
-            let t4 = _mm_addsub_ps(prod4_re, prod4_im);
+            // Complex multiply.
+            let t1 = complex_mul_sse4_2(w1, z1);
+            let t2 = complex_mul_sse4_2(w2, z2);
+            let t3 = complex_mul_sse4_2(w3, z3);
+            let t4 = complex_mul_sse4_2(w4, z4);
 
             // Radix-5 DFT decomposition.
             let sum_all = _mm_add_ps(_mm_add_ps(t1, t2), _mm_add_ps(t3, t4));
@@ -308,7 +256,6 @@ pub(super) unsafe fn butterfly_radix5_generic_sse4_2(
             let t1_swap = _mm_shuffle_ps(t1, t1, 0b10_11_00_01);
             let t4_swap = _mm_shuffle_ps(t4, t4, 0b10_11_00_01);
             let b1_temp = _mm_sub_ps(t1_swap, t4_swap);
-            let negate_im = _mm_set_ps(-0.0, 0.0, -0.0, 0.0);
             let b1 = _mm_xor_ps(b1_temp, negate_im);
 
             let t2_swap = _mm_shuffle_ps(t2, t2, 0b10_11_00_01);

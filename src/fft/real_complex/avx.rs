@@ -31,16 +31,15 @@ pub(crate) unsafe fn postprocess_fft_avx_fma(
             let idx2 = right_len - 3 - i;
             let idx3 = right_len - 4 - i;
 
-            let out_rev = _mm256_set_ps(
-                output_right_middle[idx3].im,
-                output_right_middle[idx3].re,
-                output_right_middle[idx2].im,
-                output_right_middle[idx2].re,
-                output_right_middle[idx1].im,
-                output_right_middle[idx1].re,
-                output_right_middle[idx0].im,
-                output_right_middle[idx0].re,
-            );
+            let out_rev0_ptr = &output_right_middle[idx0] as *const Complex32 as *const f64;
+            let out_rev1_ptr = &output_right_middle[idx1] as *const Complex32 as *const f64;
+            let out_rev2_ptr = &output_right_middle[idx2] as *const Complex32 as *const f64;
+            let out_rev3_ptr = &output_right_middle[idx3] as *const Complex32 as *const f64;
+            let out_rev_lo_pd = _mm_loadh_pd(_mm_load_sd(out_rev0_ptr), out_rev1_ptr);
+            let out_rev_hi_pd = _mm_loadh_pd(_mm_load_sd(out_rev2_ptr), out_rev3_ptr);
+            let out_rev_lo = _mm_castpd_ps(out_rev_lo_pd);
+            let out_rev_hi = _mm_castpd_ps(out_rev_hi_pd);
+            let out_rev = _mm256_set_m128(out_rev_hi, out_rev_lo);
 
             let tw_ptr = twiddles.as_ptr().add(i) as *const f32;
             let tw = _mm256_loadu_ps(tw_ptr);
@@ -81,16 +80,18 @@ pub(crate) unsafe fn postprocess_fft_avx_fma(
             let imag_minus_half_diff = _mm256_fnmadd_ps(half, diff, imaginary);
             let right_output = _mm256_blend_ps(half_sum_minus_real, imag_minus_half_diff, 0xAA);
 
-            let mut right_vals = [0.0f32; 8];
-            _mm256_storeu_ps(right_vals.as_mut_ptr(), right_output);
-
-            output_right_middle[right_len - 1 - (i)] = Complex32::new(right_vals[0], right_vals[1]);
-            output_right_middle[right_len - 1 - (i + 1)] =
-                Complex32::new(right_vals[2], right_vals[2 + 1]);
-            output_right_middle[right_len - 1 - (i + 2)] =
-                Complex32::new(right_vals[2 * 2], right_vals[2 * 2 + 1]);
-            output_right_middle[right_len - 1 - (i + 3)] =
-                Complex32::new(right_vals[3 * 2], right_vals[3 * 2 + 1]);
+            let right_output_lo = _mm256_castps256_ps128(right_output);
+            let right_output_hi = _mm256_extractf128_ps(right_output, 1);
+            let out_rev0_ptr_mut = &mut output_right_middle[idx0] as *mut Complex32 as *mut f64;
+            let out_rev1_ptr_mut = &mut output_right_middle[idx1] as *mut Complex32 as *mut f64;
+            let out_rev2_ptr_mut = &mut output_right_middle[idx2] as *mut Complex32 as *mut f64;
+            let out_rev3_ptr_mut = &mut output_right_middle[idx3] as *mut Complex32 as *mut f64;
+            let right_output_lo_pd = _mm_castps_pd(right_output_lo);
+            let right_output_hi_pd = _mm_castps_pd(right_output_hi);
+            _mm_storel_pd(out_rev0_ptr_mut, right_output_lo_pd);
+            _mm_storeh_pd(out_rev1_ptr_mut, right_output_lo_pd);
+            _mm_storel_pd(out_rev2_ptr_mut, right_output_hi_pd);
+            _mm_storeh_pd(out_rev3_ptr_mut, right_output_hi_pd);
         }
 
         let remaining_start = simd_count * 4;
@@ -151,16 +152,15 @@ pub(crate) unsafe fn preprocess_ifft_avx_fma(
             let idx2 = input_right_middle.len() - 3 - i;
             let idx3 = input_right_middle.len() - 4 - i;
 
-            let inp_rev = _mm256_set_ps(
-                input_right_middle[idx3].im,
-                input_right_middle[idx3].re,
-                input_right_middle[idx2].im,
-                input_right_middle[idx2].re,
-                input_right_middle[idx1].im,
-                input_right_middle[idx1].re,
-                input_right_middle[idx0].im,
-                input_right_middle[idx0].re,
-            );
+            let inp_rev0_ptr = &input_right_middle[idx0] as *const Complex32 as *const f64;
+            let inp_rev1_ptr = &input_right_middle[idx1] as *const Complex32 as *const f64;
+            let inp_rev2_ptr = &input_right_middle[idx2] as *const Complex32 as *const f64;
+            let inp_rev3_ptr = &input_right_middle[idx3] as *const Complex32 as *const f64;
+            let inp_rev_lo_pd = _mm_loadh_pd(_mm_load_sd(inp_rev0_ptr), inp_rev1_ptr);
+            let inp_rev_hi_pd = _mm_loadh_pd(_mm_load_sd(inp_rev2_ptr), inp_rev3_ptr);
+            let inp_rev_lo = _mm_castpd_ps(inp_rev_lo_pd);
+            let inp_rev_hi = _mm_castpd_ps(inp_rev_hi_pd);
+            let inp_rev = _mm256_set_m128(inp_rev_hi, inp_rev_lo);
 
             let tw_ptr = twiddles.as_ptr().add(i) as *const f32;
             let tw = _mm256_loadu_ps(tw_ptr);
@@ -199,17 +199,18 @@ pub(crate) unsafe fn preprocess_ifft_avx_fma(
             let neg_imag_minus_diff = _mm256_sub_ps(_mm256_setzero_ps(), imag_plus_diff);
             let right_input = _mm256_blend_ps(sum_plus_real, neg_imag_minus_diff, 0xAA);
 
-            let mut right_vals = [0.0f32; 8];
-            _mm256_storeu_ps(right_vals.as_mut_ptr(), right_input);
-
-            input_right_middle[input_right_middle.len() - 1 - (i)] =
-                Complex32::new(right_vals[0], right_vals[1]);
-            input_right_middle[input_right_middle.len() - 1 - (i + 1)] =
-                Complex32::new(right_vals[2], right_vals[2 + 1]);
-            input_right_middle[input_right_middle.len() - 1 - (i + 2)] =
-                Complex32::new(right_vals[2 * 2], right_vals[2 * 2 + 1]);
-            input_right_middle[input_right_middle.len() - 1 - (i + 3)] =
-                Complex32::new(right_vals[3 * 2], right_vals[3 * 2 + 1]);
+            let right_input_lo = _mm256_castps256_ps128(right_input);
+            let right_input_hi = _mm256_extractf128_ps(right_input, 1);
+            let inp_rev0_ptr_mut = &mut input_right_middle[idx0] as *mut Complex32 as *mut f64;
+            let inp_rev1_ptr_mut = &mut input_right_middle[idx1] as *mut Complex32 as *mut f64;
+            let inp_rev2_ptr_mut = &mut input_right_middle[idx2] as *mut Complex32 as *mut f64;
+            let inp_rev3_ptr_mut = &mut input_right_middle[idx3] as *mut Complex32 as *mut f64;
+            let right_input_lo_pd = _mm_castps_pd(right_input_lo);
+            let right_input_hi_pd = _mm_castps_pd(right_input_hi);
+            _mm_storel_pd(inp_rev0_ptr_mut, right_input_lo_pd);
+            _mm_storeh_pd(inp_rev1_ptr_mut, right_input_lo_pd);
+            _mm_storel_pd(inp_rev2_ptr_mut, right_input_hi_pd);
+            _mm_storeh_pd(inp_rev3_ptr_mut, right_input_hi_pd);
         }
 
         let remaining_start = simd_count * 4;

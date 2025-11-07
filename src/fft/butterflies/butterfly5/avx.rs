@@ -1,5 +1,8 @@
 use super::{COS_2PI_5, COS_4PI_5, SIN_2PI_5, SIN_4PI_5};
-use crate::fft::Complex32;
+use crate::fft::{
+    Complex32,
+    butterflies::ops::{complex_mul_avx, complex_mul_i_avx, load_neg_imag_mask_avx},
+};
 
 /// Performs a single radix-5 Stockham butterfly stage (out-of-place, AVX+FMA) for stride=1 (first stage).
 #[target_feature(enable = "avx,fma")]
@@ -19,6 +22,7 @@ pub(super) unsafe fn butterfly_radix5_stride1_avx_fma(
         let sin_2pi_5_vec = _mm256_set1_ps(SIN_2PI_5);
         let cos_4pi_5_vec = _mm256_set1_ps(COS_4PI_5);
         let sin_4pi_5_vec = _mm256_set1_ps(SIN_4PI_5);
+        let neg_imag_mask = load_neg_imag_mask_avx();
 
         for i in (0..simd_iters).step_by(4) {
             let z0_ptr = src.as_ptr().add(i) as *const f32;
@@ -36,48 +40,18 @@ pub(super) unsafe fn butterfly_radix5_stride1_avx_fma(
             let z4_ptr = src.as_ptr().add(i + fifth_samples * 4) as *const f32;
             let z4 = _mm256_loadu_ps(z4_ptr);
 
-            // Load 16 twiddles contiguously.
+            // Load prepackaged twiddles directly (no shuffle needed).
             let tw_ptr = stage_twiddles.as_ptr().add(i * 4) as *const f32;
-            let tw_0 = _mm256_loadu_ps(tw_ptr);
-            let tw_1 = _mm256_loadu_ps(tw_ptr.add(8));
-            let tw_2 = _mm256_loadu_ps(tw_ptr.add(16));
-            let tw_3 = _mm256_loadu_ps(tw_ptr.add(24));
-
-            // Extract w1, w2, w3, w4 from contiguous loads.
-            let temp_01 = _mm256_permute2f128_ps(tw_0, tw_2, 0x20);
-            let temp_23 = _mm256_permute2f128_ps(tw_1, tw_3, 0x20);
-            let temp_45 = _mm256_permute2f128_ps(tw_0, tw_2, 0x31);
-            let temp_67 = _mm256_permute2f128_ps(tw_1, tw_3, 0x31);
-
-            let w1 = _mm256_shuffle_ps(temp_01, temp_23, 0b01_00_01_00);
-            let w2 = _mm256_shuffle_ps(temp_01, temp_23, 0b11_10_11_10);
-            let w3 = _mm256_shuffle_ps(temp_45, temp_67, 0b01_00_01_00);
-            let w4 = _mm256_shuffle_ps(temp_45, temp_67, 0b11_10_11_10);
+            let w1 = _mm256_loadu_ps(tw_ptr); // w1[i..i+4]
+            let w2 = _mm256_loadu_ps(tw_ptr.add(8)); // w2[i..i+4]
+            let w3 = _mm256_loadu_ps(tw_ptr.add(16)); // w3[i..i+4]
+            let w4 = _mm256_loadu_ps(tw_ptr.add(24)); // w4[i..i+4]
 
             // Complex multiply: t1 = w1 * z1, t2 = w2 * z2, t3 = w3 * z3, t4 = w4 * z4
-            let z1_re = _mm256_moveldup_ps(z1);
-            let z1_im = _mm256_movehdup_ps(z1);
-            let w1_swap = _mm256_permute_ps(w1, 0b10_11_00_01);
-            let prod1_im = _mm256_mul_ps(w1_swap, z1_im);
-            let t1 = _mm256_fmaddsub_ps(w1, z1_re, prod1_im);
-
-            let z2_re = _mm256_moveldup_ps(z2);
-            let z2_im = _mm256_movehdup_ps(z2);
-            let w2_swap = _mm256_permute_ps(w2, 0b10_11_00_01);
-            let prod2_im = _mm256_mul_ps(w2_swap, z2_im);
-            let t2 = _mm256_fmaddsub_ps(w2, z2_re, prod2_im);
-
-            let z3_re = _mm256_moveldup_ps(z3);
-            let z3_im = _mm256_movehdup_ps(z3);
-            let w3_swap = _mm256_permute_ps(w3, 0b10_11_00_01);
-            let prod3_im = _mm256_mul_ps(w3_swap, z3_im);
-            let t3 = _mm256_fmaddsub_ps(w3, z3_re, prod3_im);
-
-            let z4_re = _mm256_moveldup_ps(z4);
-            let z4_im = _mm256_movehdup_ps(z4);
-            let w4_swap = _mm256_permute_ps(w4, 0b10_11_00_01);
-            let prod4_im = _mm256_mul_ps(w4_swap, z4_im);
-            let t4 = _mm256_fmaddsub_ps(w4, z4_re, prod4_im);
+            let t1 = complex_mul_avx(w1, z1);
+            let t2 = complex_mul_avx(w2, z2);
+            let t3 = complex_mul_avx(w3, z3);
+            let t4 = complex_mul_avx(w4, z4);
 
             // Radix-5 DFT.
             let sum_all = _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(t1, t2), t3), t4);
@@ -88,11 +62,8 @@ pub(super) unsafe fn butterfly_radix5_stride1_avx_fma(
             // b1 = i * (t1 - t4), b2 = i * (t2 - t3)
             let t1_sub_t4 = _mm256_sub_ps(t1, t4);
             let t2_sub_t3 = _mm256_sub_ps(t2, t3);
-            let sign_mask = _mm256_set_ps(-0.0, 0.0, -0.0, 0.0, -0.0, 0.0, -0.0, 0.0);
-            let b1_swapped = _mm256_shuffle_ps(t1_sub_t4, t1_sub_t4, 0b10_11_00_01);
-            let b1 = _mm256_xor_ps(b1_swapped, sign_mask);
-            let b2_swapped = _mm256_shuffle_ps(t2_sub_t3, t2_sub_t3, 0b10_11_00_01);
-            let b2 = _mm256_xor_ps(b2_swapped, sign_mask);
+            let b1 = complex_mul_i_avx(t1_sub_t4, neg_imag_mask);
+            let b2 = complex_mul_i_avx(t2_sub_t3, neg_imag_mask);
 
             // c1 = z0 + COS_2PI_5 * a1 + COS_4PI_5 * a2
             let c1 = _mm256_add_ps(
@@ -250,6 +221,7 @@ pub(super) unsafe fn butterfly_radix5_generic_avx_fma(
         let sin_2pi_5_vec = _mm256_set1_ps(SIN_2PI_5);
         let cos_4pi_5_vec = _mm256_set1_ps(COS_4PI_5);
         let sin_4pi_5_vec = _mm256_set1_ps(SIN_4PI_5);
+        let neg_imag_mask = load_neg_imag_mask_avx();
 
         for i in (0..simd_iters).step_by(4) {
             let k0 = i % stride;
@@ -272,52 +244,18 @@ pub(super) unsafe fn butterfly_radix5_generic_avx_fma(
             let z4_ptr = src.as_ptr().add(i + fifth_samples * 4) as *const f32;
             let z4 = _mm256_loadu_ps(z4_ptr);
 
-            // Load 16 twiddles contiguously.
+            // Load prepackaged twiddles directly (no shuffle needed).
             let tw_ptr = stage_twiddles.as_ptr().add(i * 4) as *const f32;
-            let tw_0 = _mm256_loadu_ps(tw_ptr);
-            let tw_1 = _mm256_loadu_ps(tw_ptr.add(8));
-            let tw_2 = _mm256_loadu_ps(tw_ptr.add(16));
-            let tw_3 = _mm256_loadu_ps(tw_ptr.add(24));
-
-            // Extract w1, w2, w3, w4 from contiguous loads.
-            // tw_0 = [w1[0], w2[0] | w3[0], w4[0]]
-            // tw_1 = [w1[1], w2[1] | w3[1], w4[1]]
-            // tw_2 = [w1[2], w2[2] | w3[2], w4[2]]
-            // tw_3 = [w1[3], w2[3] | w3[3], w4[3]]
-            let temp_01 = _mm256_permute2f128_ps(tw_0, tw_2, 0x20);
-            let temp_23 = _mm256_permute2f128_ps(tw_1, tw_3, 0x20);
-            let temp_45 = _mm256_permute2f128_ps(tw_0, tw_2, 0x31);
-            let temp_67 = _mm256_permute2f128_ps(tw_1, tw_3, 0x31);
-
-            let w1 = _mm256_shuffle_ps(temp_01, temp_23, 0b01_00_01_00);
-            let w2 = _mm256_shuffle_ps(temp_01, temp_23, 0b11_10_11_10);
-            let w3 = _mm256_shuffle_ps(temp_45, temp_67, 0b01_00_01_00);
-            let w4 = _mm256_shuffle_ps(temp_45, temp_67, 0b11_10_11_10);
+            let w1 = _mm256_loadu_ps(tw_ptr); // w1[i..i+4]
+            let w2 = _mm256_loadu_ps(tw_ptr.add(8)); // w2[i..i+4]
+            let w3 = _mm256_loadu_ps(tw_ptr.add(16)); // w3[i..i+4]
+            let w4 = _mm256_loadu_ps(tw_ptr.add(24)); // w4[i..i+4]
 
             // Complex multiply: t1 = w1 * z1, t2 = w2 * z2, t3 = w3 * z3, t4 = w4 * z4
-            let z1_re = _mm256_moveldup_ps(z1);
-            let z1_im = _mm256_movehdup_ps(z1);
-            let w1_swap = _mm256_permute_ps(w1, 0b10_11_00_01);
-            let prod1_im = _mm256_mul_ps(w1_swap, z1_im);
-            let t1 = _mm256_fmaddsub_ps(w1, z1_re, prod1_im);
-
-            let z2_re = _mm256_moveldup_ps(z2);
-            let z2_im = _mm256_movehdup_ps(z2);
-            let w2_swap = _mm256_permute_ps(w2, 0b10_11_00_01);
-            let prod2_im = _mm256_mul_ps(w2_swap, z2_im);
-            let t2 = _mm256_fmaddsub_ps(w2, z2_re, prod2_im);
-
-            let z3_re = _mm256_moveldup_ps(z3);
-            let z3_im = _mm256_movehdup_ps(z3);
-            let w3_swap = _mm256_permute_ps(w3, 0b10_11_00_01);
-            let prod3_im = _mm256_mul_ps(w3_swap, z3_im);
-            let t3 = _mm256_fmaddsub_ps(w3, z3_re, prod3_im);
-
-            let z4_re = _mm256_moveldup_ps(z4);
-            let z4_im = _mm256_movehdup_ps(z4);
-            let w4_swap = _mm256_permute_ps(w4, 0b10_11_00_01);
-            let prod4_im = _mm256_mul_ps(w4_swap, z4_im);
-            let t4 = _mm256_fmaddsub_ps(w4, z4_re, prod4_im);
+            let t1 = complex_mul_avx(w1, z1);
+            let t2 = complex_mul_avx(w2, z2);
+            let t3 = complex_mul_avx(w3, z3);
+            let t4 = complex_mul_avx(w4, z4);
 
             // Radix-5 DFT.
             let sum_all = _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(t1, t2), t3), t4);
@@ -328,11 +266,8 @@ pub(super) unsafe fn butterfly_radix5_generic_avx_fma(
             // b1 = i * (t1 - t4), b2 = i * (t2 - t3)
             let t1_sub_t4 = _mm256_sub_ps(t1, t4);
             let t2_sub_t3 = _mm256_sub_ps(t2, t3);
-            let sign_mask = _mm256_set_ps(-0.0, 0.0, -0.0, 0.0, -0.0, 0.0, -0.0, 0.0);
-            let b1_swapped = _mm256_shuffle_ps(t1_sub_t4, t1_sub_t4, 0b10_11_00_01);
-            let b1 = _mm256_xor_ps(b1_swapped, sign_mask);
-            let b2_swapped = _mm256_shuffle_ps(t2_sub_t3, t2_sub_t3, 0b10_11_00_01);
-            let b2 = _mm256_xor_ps(b2_swapped, sign_mask);
+            let b1 = complex_mul_i_avx(t1_sub_t4, neg_imag_mask);
+            let b2 = complex_mul_i_avx(t2_sub_t3, neg_imag_mask);
 
             // c1 = z0 + COS_2PI_5 * a1 + COS_4PI_5 * a2
             let c1 = _mm256_add_ps(

@@ -170,6 +170,9 @@ impl ConversionConfig {
         let mut scaled_factors_out = base_config.base_factors_out.clone();
         scaled_factors_out.extend(output_multiplier_factors);
 
+        let scaled_factors_in = Self::optimize_factors(scaled_factors_in);
+        let scaled_factors_out = Self::optimize_factors(scaled_factors_out);
+
         ConversionConfig {
             base_fft_size_in: scaled_fft_size_in,
             base_fft_size_out: scaled_fft_size_out,
@@ -196,6 +199,33 @@ impl ConversionConfig {
         if num_factor2 > 0 {
             factors.push(Radix::Factor2);
         }
+        factors
+    }
+
+    /// Optimize factors by merging consecutive Factor2s into Factor4s.
+    pub(crate) fn optimize_factors(mut factors: Vec<Radix>) -> Vec<Radix> {
+        factors.sort_by_key(|f| core::cmp::Reverse(f.radix()));
+
+        loop {
+            let merged = if factors.len() >= 2
+                && factors[factors.len() - 1] == Radix::Factor2
+                && factors[factors.len() - 2] == Radix::Factor2
+            {
+                factors.pop();
+                factors.pop();
+                factors.push(Radix::Factor4);
+                true
+            } else {
+                false
+            };
+
+            if !merged {
+                break;
+            }
+
+            factors.sort_by_key(|f| core::cmp::Reverse(f.radix()));
+        }
+
         factors
     }
 
@@ -228,6 +258,9 @@ impl ConversionConfig {
 
         let mut factors_out = self.base_factors_out.clone();
         factors_out.extend(scaling_factors_out);
+
+        let factors_in = Self::optimize_factors(factors_in);
+        let factors_out = Self::optimize_factors(factors_out);
 
         (
             scaled_fft_size_in,
@@ -286,10 +319,10 @@ mod tests {
         assert_eq!(
             config.base_factors_in,
             vec![
-                Radix::Factor3,
+                Radix::Factor7,
+                Radix::Factor7,
                 Radix::Factor4,
-                Radix::Factor7,
-                Radix::Factor7,
+                Radix::Factor3,
                 Radix::Factor2
             ]
         );
@@ -297,11 +330,11 @@ mod tests {
         assert_eq!(
             config.base_factors_out,
             vec![
+                Radix::Factor5,
                 Radix::Factor4,
                 Radix::Factor4,
                 Radix::Factor4,
-                Radix::Factor4,
-                Radix::Factor5
+                Radix::Factor4
             ]
         );
     }
@@ -315,23 +348,22 @@ mod tests {
         assert_eq!(
             config.base_factors_in,
             vec![
-                Radix::Factor3,
+                Radix::Factor7,
+                Radix::Factor7,
                 Radix::Factor4,
-                Radix::Factor7,
-                Radix::Factor7,
+                Radix::Factor3,
                 Radix::Factor2
             ]
         );
 
-        // Output: base [Factor4, Factor4, Factor4, Factor4, Factor5] + multiplier [Factor2]
         assert_eq!(
             config.base_factors_out,
             vec![
-                Radix::Factor4,
-                Radix::Factor4,
-                Radix::Factor4,
-                Radix::Factor4,
                 Radix::Factor5,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
                 Radix::Factor2
             ]
         );
@@ -367,24 +399,66 @@ mod tests {
         assert_eq!(size_in, 588);
         assert_eq!(size_out, 1280);
 
-        // No scaling factors added, just the base factors
         assert_eq!(
             factors_in,
             vec![
-                Radix::Factor3,
-                Radix::Factor4,
                 Radix::Factor7,
-                Radix::Factor7
+                Radix::Factor7,
+                Radix::Factor4,
+                Radix::Factor3
             ]
         );
         assert_eq!(
             factors_out,
             vec![
+                Radix::Factor5,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4
+            ]
+        );
+    }
+
+    #[test]
+    fn test_optimize_factors_basic() {
+        let input = vec![Radix::Factor2, Radix::Factor2];
+        let output = ConversionConfig::optimize_factors(input);
+        assert_eq!(output, vec![Radix::Factor4]);
+    }
+
+    #[test]
+    fn test_optimize_factors_multiple_pairs() {
+        let input = vec![
+            Radix::Factor2,
+            Radix::Factor2,
+            Radix::Factor4,
+            Radix::Factor2,
+            Radix::Factor2,
+        ];
+        let output = ConversionConfig::optimize_factors(input);
+        assert_eq!(output, vec![Radix::Factor4, Radix::Factor4, Radix::Factor4]);
+    }
+
+    #[test]
+    fn test_optimize_factors_with_leading_factor2() {
+        let input = vec![
+            Radix::Factor2,
+            Radix::Factor4,
+            Radix::Factor4,
+            Radix::Factor4,
+            Radix::Factor4,
+            Radix::Factor2,
+        ];
+        let output = ConversionConfig::optimize_factors(input);
+        assert_eq!(
+            output,
+            vec![
                 Radix::Factor4,
                 Radix::Factor4,
                 Radix::Factor4,
                 Radix::Factor4,
-                Radix::Factor5
+                Radix::Factor4
             ]
         );
     }
@@ -414,25 +488,24 @@ mod tests {
         assert_eq!(input, 588);
         assert_eq!(output, 1280);
 
-        // No scaling factors added, just the base factors
         assert_eq!(
             factors_in,
             vec![
-                Radix::Factor3,
-                Radix::Factor4,
                 Radix::Factor7,
-                Radix::Factor7
+                Radix::Factor7,
+                Radix::Factor4,
+                Radix::Factor3
             ]
         );
 
         assert_eq!(
             factors_out,
             vec![
+                Radix::Factor5,
                 Radix::Factor4,
                 Radix::Factor4,
                 Radix::Factor4,
-                Radix::Factor4,
-                Radix::Factor5
+                Radix::Factor4
             ]
         );
     }

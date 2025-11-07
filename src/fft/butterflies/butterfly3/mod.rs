@@ -107,7 +107,10 @@ pub(crate) fn butterfly_radix3_dispatch(
         }
     }
 
-    butterfly_radix3_scalar(src, dst, stage_twiddles, stride);
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
+    butterfly_radix3_scalar::<4>(src, dst, stage_twiddles, stride);
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma")))]
+    butterfly_radix3_scalar::<2>(src, dst, stage_twiddles, stride);
 }
 
 /// AVX+FMA dispatcher for p1 (stride=1) variant
@@ -125,7 +128,7 @@ pub(crate) fn butterfly_radix3_stride1_avx_fma_dispatch(
         return unsafe { avx::butterfly_radix3_stride1_avx_fma(src, dst, stage_twiddles) };
     }
 
-    butterfly_radix3_scalar(src, dst, stage_twiddles, 1);
+    butterfly_radix3_scalar::<4>(src, dst, stage_twiddles, 1);
 }
 
 /// AVX+FMA dispatcher for generic (stride>1) variant
@@ -144,7 +147,7 @@ pub(crate) fn butterfly_radix3_generic_avx_fma_dispatch(
         return unsafe { avx::butterfly_radix3_generic_avx_fma(src, dst, stage_twiddles, stride) };
     }
 
-    butterfly_radix3_scalar(src, dst, stage_twiddles, stride);
+    butterfly_radix3_scalar::<4>(src, dst, stage_twiddles, stride);
 }
 
 /// SSE2 dispatcher for p1 (stride=1) variant
@@ -162,7 +165,7 @@ pub(crate) fn butterfly_radix3_stride1_sse2_dispatch(
         return unsafe { sse2::butterfly_radix3_stride1_sse2(src, dst, stage_twiddles) };
     }
 
-    butterfly_radix3_scalar(src, dst, stage_twiddles, 1);
+    butterfly_radix3_scalar::<2>(src, dst, stage_twiddles, 1);
 }
 
 /// SSE2 dispatcher for generic (stride>1) variant
@@ -181,7 +184,7 @@ pub(crate) fn butterfly_radix3_generic_sse2_dispatch(
         return unsafe { sse2::butterfly_radix3_generic_sse2(src, dst, stage_twiddles, stride) };
     }
 
-    butterfly_radix3_scalar(src, dst, stage_twiddles, stride);
+    butterfly_radix3_scalar::<2>(src, dst, stage_twiddles, stride);
 }
 
 /// SSE4.2 dispatcher for p1 (stride=1) variant
@@ -199,7 +202,7 @@ pub(crate) fn butterfly_radix3_stride1_sse4_2_dispatch(
         return unsafe { sse4_2::butterfly_radix3_stride1_sse4_2(src, dst, stage_twiddles) };
     }
 
-    butterfly_radix3_scalar(src, dst, stage_twiddles, 1);
+    butterfly_radix3_scalar::<2>(src, dst, stage_twiddles, 1);
 }
 
 /// SSE4.2 dispatcher for generic (stride>1) variant
@@ -220,12 +223,12 @@ pub(crate) fn butterfly_radix3_generic_sse4_2_dispatch(
         };
     }
 
-    butterfly_radix3_scalar(src, dst, stage_twiddles, stride);
+    butterfly_radix3_scalar::<2>(src, dst, stage_twiddles, stride);
 }
 
 /// Performs a single radix-3 Stockham butterfly stage (out-of-place, scalar).
 #[inline(always)]
-fn butterfly_radix3_scalar(
+fn butterfly_radix3_scalar<const WIDTH: usize>(
     src: &[Complex32],
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
@@ -233,11 +236,46 @@ fn butterfly_radix3_scalar(
 ) {
     let samples = src.len();
     let third_samples = samples / 3;
+    let simd_iters = (third_samples / WIDTH) * WIDTH;
 
-    for i in 0..third_samples {
+    // Process SIMD-packed region.
+    for i in 0..simd_iters {
         let k = i % stride;
-        let w1 = stage_twiddles[i * 2];
-        let w2 = stage_twiddles[i * 2 + 1];
+        let group_idx = i / WIDTH;
+        let offset_in_group = i % WIDTH;
+        let tw_base = group_idx * (2 * WIDTH) + offset_in_group;
+        let w1 = stage_twiddles[tw_base];
+        let w2 = stage_twiddles[tw_base + WIDTH];
+
+        let z0 = src[i];
+        let z1 = src[i + third_samples];
+        let z2 = src[i + third_samples * 2];
+
+        let t1 = w1.mul(&z1);
+        let t2 = w2.mul(&z2);
+
+        let sum_t = t1.add(&t2);
+        let diff_t = t1.sub(&t2);
+
+        let j = 3 * i - 2 * k;
+        dst[j] = z0.add(&sum_t);
+
+        let re_part = z0.re - 0.5 * sum_t.re;
+        let im_part = z0.im - 0.5 * sum_t.im;
+        let sqrt3_diff_re = SQRT3_2 * diff_t.im;
+        let sqrt3_diff_im = -SQRT3_2 * diff_t.re;
+
+        dst[j + stride] = Complex32::new(re_part + sqrt3_diff_re, im_part + sqrt3_diff_im);
+        dst[j + stride * 2] = Complex32::new(re_part - sqrt3_diff_re, im_part - sqrt3_diff_im);
+    }
+
+    // Process scalar tail.
+    let tail_offset = (simd_iters / WIDTH) * (2 * WIDTH);
+    for i in simd_iters..third_samples {
+        let k = i % stride;
+        let tail_idx = i - simd_iters;
+        let w1 = stage_twiddles[tail_offset + tail_idx * 2];
+        let w2 = stage_twiddles[tail_offset + tail_idx * 2 + 1];
 
         let z0 = src[i];
         let z1 = src[i + third_samples];
@@ -275,8 +313,9 @@ mod tests {
         )
     ))]
     fn test_butterfly_radix3_avx_fma_vs_scalar() {
+        use crate::fft::butterflies::tests::TestSimdWidth;
         crate::fft::butterflies::tests::test_butterfly_against_scalar(
-            butterfly_radix3_scalar,
+            |src, dst, twiddles, p| butterfly_radix3_scalar::<4>(src, dst, twiddles, p),
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     avx::butterfly_radix3_stride1_avx_fma(src, dst, twiddles);
@@ -286,6 +325,7 @@ mod tests {
             },
             3,
             2,
+            TestSimdWidth::Width4,
             "butterfly_radix3_avx_fma",
         );
     }
@@ -293,8 +333,9 @@ mod tests {
     #[test]
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     fn test_butterfly_radix3_sse2_vs_scalar() {
+        use crate::fft::butterflies::tests::TestSimdWidth;
         crate::fft::butterflies::tests::test_butterfly_against_scalar(
-            butterfly_radix3_scalar,
+            |src, dst, twiddles, p| butterfly_radix3_scalar::<2>(src, dst, twiddles, p),
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     sse2::butterfly_radix3_stride1_sse2(src, dst, twiddles);
@@ -304,6 +345,7 @@ mod tests {
             },
             3,
             2,
+            TestSimdWidth::Width2,
             "butterfly_radix3_sse2",
         );
     }
@@ -311,8 +353,9 @@ mod tests {
     #[test]
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.2"))]
     fn test_butterfly_radix3_sse4_2_vs_scalar() {
+        use crate::fft::butterflies::tests::TestSimdWidth;
         crate::fft::butterflies::tests::test_butterfly_against_scalar(
-            butterfly_radix3_scalar,
+            |src, dst, twiddles, p| butterfly_radix3_scalar::<2>(src, dst, twiddles, p),
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     sse4_2::butterfly_radix3_stride1_sse4_2(src, dst, twiddles);
@@ -322,6 +365,7 @@ mod tests {
             },
             3,
             2,
+            TestSimdWidth::Width2,
             "butterfly_radix3_sse4_2",
         );
     }
@@ -329,8 +373,9 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_butterfly_radix3_neon_vs_scalar() {
+        use crate::fft::butterflies::tests::TestSimdWidth;
         crate::fft::butterflies::tests::test_butterfly_against_scalar(
-            butterfly_radix3_scalar,
+            |src, dst, twiddles, p| butterfly_radix3_scalar::<2>(src, dst, twiddles, p),
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     neon::butterfly_radix3_stride1_neon(src, dst, twiddles);
@@ -340,6 +385,7 @@ mod tests {
             },
             3,
             2,
+            TestSimdWidth::Width2,
             "butterfly_radix3_neon",
         );
     }
