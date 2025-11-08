@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.6] - 2025-11-08
 
+The maturity of the Stockham based FFT is reaching it's optimum.
+On x86_64 AVX it is only around 10% slower than RustFFT.
+On aarch64 NEON is around 16% faster than RustFFT for most cases,
+with power-of-two cases being the exception and being 17% slower than RustFFT.
+
 ### Changed
 
 - Improved performance for `ResamplerFft` by internal optimization.

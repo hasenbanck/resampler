@@ -3,6 +3,7 @@ mod butterfly3;
 mod butterfly4;
 mod butterfly5;
 mod butterfly7;
+mod butterfly8;
 mod ops;
 
 pub(crate) use butterfly2::butterfly_radix2_dispatch;
@@ -40,6 +41,13 @@ pub(crate) use butterfly7::{
     butterfly_radix7_generic_sse4_2_dispatch, butterfly_radix7_stride1_avx_fma_dispatch,
     butterfly_radix7_stride1_sse2_dispatch, butterfly_radix7_stride1_sse4_2_dispatch,
 };
+pub(crate) use butterfly8::butterfly_radix8_dispatch;
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+pub(crate) use butterfly8::{
+    butterfly_radix8_generic_avx_fma_dispatch, butterfly_radix8_generic_sse2_dispatch,
+    butterfly_radix8_generic_sse4_2_dispatch, butterfly_radix8_stride1_avx_fma_dispatch,
+    butterfly_radix8_stride1_sse2_dispatch, butterfly_radix8_stride1_sse4_2_dispatch,
+};
 
 #[cfg(test)]
 mod tests {
@@ -49,6 +57,7 @@ mod tests {
 
     /// SIMD width for twiddle packing in tests.
     #[derive(Debug, Clone, Copy)]
+    #[allow(unused)]
     pub(super) enum TestSimdWidth {
         /// AVX: 4 complex numbers (256-bit)
         Width4,

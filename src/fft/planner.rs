@@ -170,9 +170,6 @@ impl ConversionConfig {
         let mut scaled_factors_out = base_config.base_factors_out.clone();
         scaled_factors_out.extend(output_multiplier_factors);
 
-        let scaled_factors_in = Self::optimize_factors(scaled_factors_in);
-        let scaled_factors_out = Self::optimize_factors(scaled_factors_out);
-
         ConversionConfig {
             base_fft_size_in: scaled_fft_size_in,
             base_fft_size_out: scaled_fft_size_out,
@@ -182,6 +179,7 @@ impl ConversionConfig {
     }
 
     /// Decompose a power-of-2 multiplier into radix factors.
+    /// Prefers Factor8 for power-of-2 efficiency: 8 → Factor8, 16 → 2×Factor8, etc.
     fn decompose_multiplier(multiplier: usize) -> Vec<Radix> {
         if multiplier == 1 {
             return Vec::new();
@@ -191,39 +189,18 @@ impl ConversionConfig {
 
         let num_bits = multiplier.trailing_zeros() as usize;
 
-        // Prefer Factor4 for efficiency: decompose into 4s and 2s.
-        let num_factor4 = num_bits / 2;
-        let num_factor2 = num_bits % 2;
+        // Prefer Factor8 for efficiency: decompose into 8s, 4s, and 2s.
+        let num_factor8 = num_bits / 3;
+        let remainder = num_bits % 3;
 
-        let mut factors = vec![Radix::Factor4; num_factor4];
-        if num_factor2 > 0 {
-            factors.push(Radix::Factor2);
-        }
-        factors
-    }
+        let mut factors = vec![Radix::Factor8; num_factor8];
 
-    /// Optimize factors by merging consecutive Factor2s into Factor4s.
-    pub(crate) fn optimize_factors(mut factors: Vec<Radix>) -> Vec<Radix> {
-        factors.sort_by_key(|f| core::cmp::Reverse(f.radix()));
-
-        loop {
-            let merged = if factors.len() >= 2
-                && factors[factors.len() - 1] == Radix::Factor2
-                && factors[factors.len() - 2] == Radix::Factor2
-            {
-                factors.pop();
-                factors.pop();
-                factors.push(Radix::Factor4);
-                true
-            } else {
-                false
-            };
-
-            if !merged {
-                break;
-            }
-
-            factors.sort_by_key(|f| core::cmp::Reverse(f.radix()));
+        // Handle remainder: 1 bit → Factor2, 2 bits → Factor4
+        match remainder {
+            0 => {} // No remainder
+            1 => factors.push(Radix::Factor2),
+            2 => factors.push(Radix::Factor4),
+            _ => unreachable!(),
         }
 
         factors
@@ -258,9 +235,6 @@ impl ConversionConfig {
 
         let mut factors_out = self.base_factors_out.clone();
         factors_out.extend(scaling_factors_out);
-
-        let factors_in = Self::optimize_factors(factors_in);
-        let factors_out = Self::optimize_factors(factors_out);
 
         (
             scaled_fft_size_in,
@@ -316,25 +290,27 @@ mod tests {
         assert_eq!(config.base_fft_size_in, 1176);
         assert_eq!(config.base_fft_size_out, 1280);
 
+        // 44100 is 2x the 22050 base, so adds Factor2 to input factors.
         assert_eq!(
             config.base_factors_in,
             vec![
-                Radix::Factor7,
-                Radix::Factor7,
-                Radix::Factor4,
                 Radix::Factor3,
+                Radix::Factor4,
+                Radix::Factor7,
+                Radix::Factor7,
                 Radix::Factor2
             ]
         );
 
+        // 48000 family is 1x base, no multiplier factors.
         assert_eq!(
             config.base_factors_out,
             vec![
-                Radix::Factor5,
                 Radix::Factor4,
                 Radix::Factor4,
                 Radix::Factor4,
-                Radix::Factor4
+                Radix::Factor4,
+                Radix::Factor5
             ]
         );
     }
@@ -345,25 +321,27 @@ mod tests {
         assert_eq!(config.base_fft_size_in, 1176);
         assert_eq!(config.base_fft_size_out, 2560);
 
+        // 44100 is 2x the 22050 base, so adds Factor2 to input factors.
         assert_eq!(
             config.base_factors_in,
             vec![
-                Radix::Factor7,
-                Radix::Factor7,
-                Radix::Factor4,
                 Radix::Factor3,
+                Radix::Factor4,
+                Radix::Factor7,
+                Radix::Factor7,
                 Radix::Factor2
             ]
         );
 
+        // 96000 is 2x the 48000 base, so adds Factor2 to output factors.
         assert_eq!(
             config.base_factors_out,
             vec![
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
+                Radix::Factor4,
                 Radix::Factor5,
-                Radix::Factor4,
-                Radix::Factor4,
-                Radix::Factor4,
-                Radix::Factor4,
                 Radix::Factor2
             ]
         );
@@ -371,10 +349,6 @@ mod tests {
 
     #[test]
     fn test_prefer_factor4_for_mixed_radix() {
-        // Test that prefer_factor4 logic works correctly:
-        // - Pure Factor2 bases use Factor2 for multipliers
-        // - Mixed-radix bases use Factor4 for multipliers (when possible)
-
         let config = ConversionConfig {
             base_fft_size_in: 588,
             base_fft_size_out: 1280,
@@ -395,70 +369,27 @@ mod tests {
 
         let (size_in, factors_in, size_out, factors_out) = config.scale_for_throughput();
 
-        // Base is 588, target is 512, so multiplier = 1 (no scaling needed)
+        // Base is 588, target is 512, so multiplier = 1 (no scaling needed).
         assert_eq!(size_in, 588);
         assert_eq!(size_out, 1280);
 
         assert_eq!(
             factors_in,
             vec![
-                Radix::Factor7,
-                Radix::Factor7,
+                Radix::Factor3,
                 Radix::Factor4,
-                Radix::Factor3
+                Radix::Factor7,
+                Radix::Factor7
             ]
         );
         assert_eq!(
             factors_out,
             vec![
-                Radix::Factor5,
-                Radix::Factor4,
-                Radix::Factor4,
-                Radix::Factor4,
-                Radix::Factor4
-            ]
-        );
-    }
-
-    #[test]
-    fn test_optimize_factors_basic() {
-        let input = vec![Radix::Factor2, Radix::Factor2];
-        let output = ConversionConfig::optimize_factors(input);
-        assert_eq!(output, vec![Radix::Factor4]);
-    }
-
-    #[test]
-    fn test_optimize_factors_multiple_pairs() {
-        let input = vec![
-            Radix::Factor2,
-            Radix::Factor2,
-            Radix::Factor4,
-            Radix::Factor2,
-            Radix::Factor2,
-        ];
-        let output = ConversionConfig::optimize_factors(input);
-        assert_eq!(output, vec![Radix::Factor4, Radix::Factor4, Radix::Factor4]);
-    }
-
-    #[test]
-    fn test_optimize_factors_with_leading_factor2() {
-        let input = vec![
-            Radix::Factor2,
-            Radix::Factor4,
-            Radix::Factor4,
-            Radix::Factor4,
-            Radix::Factor4,
-            Radix::Factor2,
-        ];
-        let output = ConversionConfig::optimize_factors(input);
-        assert_eq!(
-            output,
-            vec![
                 Radix::Factor4,
                 Radix::Factor4,
                 Radix::Factor4,
                 Radix::Factor4,
-                Radix::Factor4
+                Radix::Factor5
             ]
         );
     }
@@ -483,7 +414,7 @@ mod tests {
             ],
         };
 
-        // Target is 512 samples, but base is 588, so multiplier = 1 (no scaling)
+        // Target is 512 samples, but base is 588, so multiplier = 1.
         let (input, factors_in, output, factors_out) = config.scale_for_throughput();
         assert_eq!(input, 588);
         assert_eq!(output, 1280);
@@ -491,21 +422,21 @@ mod tests {
         assert_eq!(
             factors_in,
             vec![
-                Radix::Factor7,
-                Radix::Factor7,
+                Radix::Factor3,
                 Radix::Factor4,
-                Radix::Factor3
+                Radix::Factor7,
+                Radix::Factor7
             ]
         );
 
         assert_eq!(
             factors_out,
             vec![
-                Radix::Factor5,
                 Radix::Factor4,
                 Radix::Factor4,
                 Radix::Factor4,
-                Radix::Factor4
+                Radix::Factor4,
+                Radix::Factor5
             ]
         );
     }

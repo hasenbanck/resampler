@@ -1,4 +1,5 @@
 pub(crate) mod butterflies;
+pub(crate) mod optimizer;
 pub mod planner;
 mod radix_fft;
 mod real_complex;
