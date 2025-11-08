@@ -138,6 +138,11 @@ pub(super) unsafe fn butterfly_radix4_generic_neon(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
+
     let samples = src.len();
     let quarter_samples = samples >> 2;
     let simd_iters = (quarter_samples >> 1) << 1;
@@ -146,9 +151,9 @@ pub(super) unsafe fn butterfly_radix4_generic_neon(
         let neg_imag = load_neg_imag_mask();
 
         for i in (0..simd_iters).step_by(2) {
-            // Calculate twiddle indices.
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
 
             // Load z0 from first quarter.
             let z0_ptr = src.as_ptr().add(i) as *const f32;

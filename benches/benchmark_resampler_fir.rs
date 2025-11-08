@@ -1,7 +1,6 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use rand_aes::tls::rand_f32;
 use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
 
 struct BenchmarkConfig {
@@ -11,7 +10,14 @@ struct BenchmarkConfig {
 }
 
 fn generate_white_noise(size: usize) -> Vec<f32> {
-    (0..size).map(|_| rand_f32()).collect()
+    let mut state: u128 = 456423156461231;
+    (0..size)
+        .map(|_| {
+            state = state.wrapping_mul(0xDA942042E4DD58B5);
+            let val = (state >> 64) as u64;
+            (val as f64 / u64::MAX as f64) as f32 * 2.0 - 1.0
+        })
+        .collect()
 }
 
 fn bench_resampler_fir(c: &mut Criterion) {

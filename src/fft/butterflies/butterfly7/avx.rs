@@ -1,3 +1,5 @@
+use core::arch::x86_64::*;
+
 use super::{COS_2PI_7, COS_4PI_7, COS_6PI_7, SIN_2PI_7, SIN_4PI_7, SIN_6PI_7};
 use crate::fft::{
     Complex32,
@@ -11,8 +13,6 @@ pub(super) unsafe fn butterfly_radix7_stride1_avx_fma(
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
 ) {
-    use core::arch::x86_64::*;
-
     let samples = src.len();
     let seventh_samples = samples / 7;
     let simd_iters = (seventh_samples / 4) * 4;
@@ -35,6 +35,17 @@ pub(super) unsafe fn butterfly_radix7_stride1_avx_fma(
     }
 
     unsafe {
+        let cos_2pi_7 = _mm256_set1_ps(COS_2PI_7);
+        let sin_2pi_7 = _mm256_set1_ps(SIN_2PI_7);
+        let cos_4pi_7 = _mm256_set1_ps(COS_4PI_7);
+        let sin_4pi_7 = _mm256_set1_ps(SIN_4PI_7);
+        let cos_6pi_7 = _mm256_set1_ps(COS_6PI_7);
+        let sin_6pi_7 = _mm256_set1_ps(SIN_6PI_7);
+
+        let neg_sin_2pi_7 = _mm256_set1_ps(-SIN_2PI_7);
+        let neg_sin_4pi_7 = _mm256_set1_ps(-SIN_4PI_7);
+        let neg_sin_6pi_7 = _mm256_set1_ps(-SIN_6PI_7);
+
         let neg_imag_mask = load_neg_imag_mask_avx();
 
         for i in (0..simd_iters).step_by(4) {
@@ -67,17 +78,6 @@ pub(super) unsafe fn butterfly_radix7_stride1_avx_fma(
             let w4 = _mm256_loadu_ps(tw_ptr.add(24)); // w4[i..i+4]
             let w5 = _mm256_loadu_ps(tw_ptr.add(32)); // w5[i..i+4]
             let w6 = _mm256_loadu_ps(tw_ptr.add(40)); // w6[i..i+4]
-
-            // Preload all trigonometric constants.
-            let cos_2pi_7 = _mm256_set1_ps(COS_2PI_7);
-            let sin_2pi_7 = _mm256_set1_ps(SIN_2PI_7);
-            let cos_4pi_7 = _mm256_set1_ps(COS_4PI_7);
-            let sin_4pi_7 = _mm256_set1_ps(SIN_4PI_7);
-            let cos_6pi_7 = _mm256_set1_ps(COS_6PI_7);
-            let sin_6pi_7 = _mm256_set1_ps(SIN_6PI_7);
-            let neg_sin_2pi_7 = _mm256_set1_ps(-SIN_2PI_7);
-            let neg_sin_4pi_7 = _mm256_set1_ps(-SIN_4PI_7);
-            let neg_sin_6pi_7 = _mm256_set1_ps(-SIN_6PI_7);
 
             // Complex multiply all twiddles.
             let t1 = complex_mul_avx(w1, z1);
@@ -342,7 +342,10 @@ pub(super) unsafe fn butterfly_radix7_generic_avx_fma(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
-    use core::arch::x86_64::*;
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
 
     let samples = src.len();
     let seventh_samples = samples / 7;
@@ -367,13 +370,25 @@ pub(super) unsafe fn butterfly_radix7_generic_avx_fma(
     }
 
     unsafe {
+        let cos_2pi_7 = _mm256_set1_ps(COS_2PI_7);
+        let sin_2pi_7 = _mm256_set1_ps(SIN_2PI_7);
+        let cos_4pi_7 = _mm256_set1_ps(COS_4PI_7);
+        let sin_4pi_7 = _mm256_set1_ps(SIN_4PI_7);
+        let cos_6pi_7 = _mm256_set1_ps(COS_6PI_7);
+        let sin_6pi_7 = _mm256_set1_ps(SIN_6PI_7);
+
+        let neg_sin_2pi_7 = _mm256_set1_ps(-SIN_2PI_7);
+        let neg_sin_4pi_7 = _mm256_set1_ps(-SIN_4PI_7);
+        let neg_sin_6pi_7 = _mm256_set1_ps(-SIN_6PI_7);
+
         let neg_imag_mask = load_neg_imag_mask_avx();
 
         for i in (0..simd_iters).step_by(4) {
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
-            let k2 = (i + 2) % stride;
-            let k3 = (i + 3) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
+            let k2 = k + 2 - ((k + 2 >= stride) as usize) * stride;
+            let k3 = k + 3 - ((k + 3 >= stride) as usize) * stride;
 
             // Load z0.
             let z0_ptr = src.as_ptr().add(i) as *const f32;
@@ -405,17 +420,6 @@ pub(super) unsafe fn butterfly_radix7_generic_avx_fma(
             let w4 = _mm256_loadu_ps(tw_ptr.add(24)); // w4[i..i+4]
             let w5 = _mm256_loadu_ps(tw_ptr.add(32)); // w5[i..i+4]
             let w6 = _mm256_loadu_ps(tw_ptr.add(40)); // w6[i..i+4]
-
-            // Preload all trigonometric constants early to mask memory latency.
-            let cos_2pi_7 = _mm256_set1_ps(COS_2PI_7);
-            let sin_2pi_7 = _mm256_set1_ps(SIN_2PI_7);
-            let cos_4pi_7 = _mm256_set1_ps(COS_4PI_7);
-            let sin_4pi_7 = _mm256_set1_ps(SIN_4PI_7);
-            let cos_6pi_7 = _mm256_set1_ps(COS_6PI_7);
-            let sin_6pi_7 = _mm256_set1_ps(SIN_6PI_7);
-            let neg_sin_2pi_7 = _mm256_set1_ps(-SIN_2PI_7);
-            let neg_sin_4pi_7 = _mm256_set1_ps(-SIN_4PI_7);
-            let neg_sin_6pi_7 = _mm256_set1_ps(-SIN_6PI_7);
 
             // Complex multiply all twiddles.
             let t1 = complex_mul_avx(w1, z1);

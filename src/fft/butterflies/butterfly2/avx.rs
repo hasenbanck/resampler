@@ -1,3 +1,5 @@
+use core::arch::x86_64::*;
+
 use crate::fft::{Complex32, butterflies::ops::complex_mul_avx};
 
 /// Performs a single radix-2 Stockham butterfly stage for stride=1 (out-of-place, AVX+FMA).
@@ -11,8 +13,6 @@ pub(super) unsafe fn butterfly_radix2_stride1_avx_fma(
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
 ) {
-    use core::arch::x86_64::*;
-
     let samples = src.len();
     let half_samples = samples >> 1;
     let simd_iters = (half_samples / 4) * 4;
@@ -82,7 +82,10 @@ pub(super) unsafe fn butterfly_radix2_generic_avx_fma(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
-    use core::arch::x86_64::*;
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
 
     let samples = src.len();
     let half_samples = samples >> 1;
@@ -90,11 +93,11 @@ pub(super) unsafe fn butterfly_radix2_generic_avx_fma(
 
     unsafe {
         for i in (0..simd_iters).step_by(4) {
-            // With replicated twiddles: direct indexing, k = i % p computed during twiddle generation.
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
-            let k2 = (i + 2) % stride;
-            let k3 = (i + 3) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
+            let k2 = k + 2 - ((k + 2 >= stride) as usize) * stride;
+            let k3 = k + 3 - ((k + 3 >= stride) as usize) * stride;
 
             // Load 4 complex numbers from first half.
             let a_ptr = src.as_ptr().add(i) as *const f32;

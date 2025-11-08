@@ -22,12 +22,12 @@ pub(super) unsafe fn butterfly_radix5_stride1_neon(
     let simd_iters = (fifth_samples >> 1) << 1;
 
     unsafe {
-        let neg_imag = load_neg_imag_mask();
-
         let cos_2pi_5_vec = vdupq_n_f32(COS_2PI_5);
         let sin_2pi_5_vec = vdupq_n_f32(SIN_2PI_5);
         let cos_4pi_5_vec = vdupq_n_f32(COS_4PI_5);
         let sin_4pi_5_vec = vdupq_n_f32(SIN_4PI_5);
+
+        let neg_imag = load_neg_imag_mask();
 
         for i in (0..simd_iters).step_by(2) {
             // Load z0 from first fifth.
@@ -183,21 +183,27 @@ pub(super) unsafe fn butterfly_radix5_generic_neon(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
+
     let samples = src.len();
     let fifth_samples = samples / 5;
     let simd_iters = (fifth_samples >> 1) << 1;
 
     unsafe {
-        let neg_imag = load_neg_imag_mask();
-
         let cos_2pi_5_vec = vdupq_n_f32(COS_2PI_5);
         let sin_2pi_5_vec = vdupq_n_f32(SIN_2PI_5);
         let cos_4pi_5_vec = vdupq_n_f32(COS_4PI_5);
         let sin_4pi_5_vec = vdupq_n_f32(SIN_4PI_5);
 
+        let neg_imag = load_neg_imag_mask();
+
         for i in (0..simd_iters).step_by(2) {
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
 
             // Load z0 from first fifth.
             let z0_ptr = src.as_ptr().add(i) as *const f32;

@@ -128,8 +128,9 @@ pub(super) unsafe fn butterfly_radix3_generic_sse4_2(
         let half_vec = _mm_set1_ps(0.5);
 
         for i in (0..simd_iters).step_by(2) {
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
 
             // Load 2 complex numbers from each third.
             let z0_ptr = src.as_ptr().add(i) as *const f32;

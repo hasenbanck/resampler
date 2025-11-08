@@ -1,3 +1,5 @@
+use core::arch::x86_64::*;
+
 use super::{COS_2PI_5, COS_4PI_5, SIN_2PI_5, SIN_4PI_5};
 use crate::fft::{
     Complex32,
@@ -11,8 +13,6 @@ pub(super) unsafe fn butterfly_radix5_stride1_avx_fma(
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
 ) {
-    use core::arch::x86_64::*;
-
     let samples = src.len();
     let fifth_samples = samples / 5;
     let simd_iters = (fifth_samples >> 2) << 2;
@@ -22,6 +22,7 @@ pub(super) unsafe fn butterfly_radix5_stride1_avx_fma(
         let sin_2pi_5_vec = _mm256_set1_ps(SIN_2PI_5);
         let cos_4pi_5_vec = _mm256_set1_ps(COS_4PI_5);
         let sin_4pi_5_vec = _mm256_set1_ps(SIN_4PI_5);
+
         let neg_imag_mask = load_neg_imag_mask_avx();
 
         for i in (0..simd_iters).step_by(4) {
@@ -210,7 +211,10 @@ pub(super) unsafe fn butterfly_radix5_generic_avx_fma(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
-    use core::arch::x86_64::*;
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
 
     let samples = src.len();
     let fifth_samples = samples / 5;
@@ -221,13 +225,15 @@ pub(super) unsafe fn butterfly_radix5_generic_avx_fma(
         let sin_2pi_5_vec = _mm256_set1_ps(SIN_2PI_5);
         let cos_4pi_5_vec = _mm256_set1_ps(COS_4PI_5);
         let sin_4pi_5_vec = _mm256_set1_ps(SIN_4PI_5);
+
         let neg_imag_mask = load_neg_imag_mask_avx();
 
         for i in (0..simd_iters).step_by(4) {
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
-            let k2 = (i + 2) % stride;
-            let k3 = (i + 3) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
+            let k2 = k + 2 - ((k + 2 >= stride) as usize) * stride;
+            let k3 = k + 3 - ((k + 3 >= stride) as usize) * stride;
 
             let z0_ptr = src.as_ptr().add(i) as *const f32;
             let z0 = _mm256_loadu_ps(z0_ptr);

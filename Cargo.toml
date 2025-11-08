@@ -2,7 +2,7 @@
 name = "resampler"
 description = "A small audio resampling library"
 authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0 OR MIT"
@@ -19,7 +19,6 @@ libm = { version = "0.2", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }
-rand_aes = "0.5"
 
 [[bench]]
 name = "benchmark_resampler_fft"

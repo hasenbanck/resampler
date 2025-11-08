@@ -5,11 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2025-11-08
+
+### Changed
+
+- Improved performance for `ResamplerFft` by optimizing away a bottleneck caused by a modulo operation
+  (15% to 25% improved throughout).
+
 ## [0.3.4] - 2025-11-07
 
 ### Changed
 
-- Improved performance for `ResamplerFft` by internal optimizations (~10% improvement throughout).
+- Improved performance for `ResamplerFft` by internal optimizations (~10% improved throughout).
 
 ## [0.3.3] - 2025-11-05
 
