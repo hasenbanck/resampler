@@ -212,9 +212,7 @@ pub(super) unsafe fn butterfly_radix5_generic_avx_fma(
     stride: usize,
 ) {
     // We convince the compiler here that stride can't be 0 to optimize better.
-    if stride == 0 {
-        return;
-    }
+    let stride = stride.max(1);
 
     let samples = src.len();
     let fifth_samples = samples / 5;

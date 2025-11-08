@@ -273,9 +273,7 @@ pub(super) unsafe fn butterfly_radix7_generic_neon(
     stride: usize,
 ) {
     // We convince the compiler here that stride can't be 0 to optimize better.
-    if stride == 0 {
-        return;
-    }
+    let stride = stride.max(1);
 
     let samples = src.len();
     let seventh_samples = samples / 7;

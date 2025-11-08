@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Improved performance for `ResamplerFft` by optimizing away a bottleneck caused by a modulo operation
-  (15% to 25% improved throughout).
+  (15% to 25% improved throughout with AVX).
 
 ## [0.3.4] - 2025-11-07
 

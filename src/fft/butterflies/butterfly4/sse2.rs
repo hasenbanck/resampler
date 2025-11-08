@@ -126,9 +126,7 @@ pub(super) unsafe fn butterfly_radix4_generic_sse2(
     stride: usize,
 ) {
     // We convince the compiler here that stride can't be 0 to optimize better.
-    if stride == 0 {
-        return;
-    }
+    let stride = stride.max(1);
 
     let samples = src.len();
     let quarter_samples = samples >> 2;
