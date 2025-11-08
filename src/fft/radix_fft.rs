@@ -4,8 +4,9 @@ use core::{f64, marker::PhantomData, slice};
 use super::{
     butterflies::{
         butterfly_radix2_dispatch, butterfly_radix3_dispatch, butterfly_radix4_dispatch,
-        butterfly_radix5_dispatch, butterfly_radix7_dispatch,
+        butterfly_radix5_dispatch, butterfly_radix7_dispatch, butterfly_radix8_dispatch,
     },
+    optimizer::optimize_factors,
     stockham_autosort::OutputLocation,
 };
 use crate::Complex32;
@@ -23,6 +24,8 @@ pub(crate) enum Radix {
     Factor5,
     /// Radix-7
     Factor7,
+    /// Radix-8
+    Factor8,
 }
 
 impl Radix {
@@ -34,6 +37,7 @@ impl Radix {
             Radix::Factor4 => 4,
             Radix::Factor5 => 5,
             Radix::Factor7 => 7,
+            Radix::Factor8 => 8,
         }
     }
 }
@@ -110,6 +114,7 @@ impl<D> RadixFFT<D> {
         let n2 = n / 2;
 
         let factors = Self::compute_factors(&factors);
+        let factors = optimize_factors(factors);
 
         let simd_width = Self::detect_simd_width();
 
@@ -213,13 +218,14 @@ impl<D> RadixFFT<D> {
         simd_width
     }
 
-    /// Compute N/2 factors by removing one Factor2 or converting Factor4 to Factor2.
+    /// Compute N/2 factors by removing one Factor2 or converting Factor4/Factor8 to appropriate factor.
     fn compute_factors(factors: &[Radix]) -> Vec<Radix> {
         if factors.len() == 1 {
             let factor = factors[0];
             match factor {
                 Radix::Factor2 => Vec::new(),
                 Radix::Factor4 => vec![Radix::Factor2],
+                Radix::Factor8 => vec![Radix::Factor4],
                 _ => panic!("Unsupported single factor for N/2 optimization: {factor:?}"),
             }
         } else {
@@ -227,19 +233,13 @@ impl<D> RadixFFT<D> {
 
             if let Some(pos) = factors.iter().position(|&f| f == Radix::Factor2) {
                 factors.remove(pos);
+            } else if let Some(pos) = factors.iter().position(|&f| f == Radix::Factor8) {
+                factors[pos] = Radix::Factor4;
             } else if let Some(pos) = factors.iter().position(|&f| f == Radix::Factor4) {
                 factors[pos] = Radix::Factor2;
             } else {
-                panic!("Even-length FFT must have at least one Factor2 or Factor4");
+                panic!("Even-length FFT must have at least one Factor2, Factor4, or Factor8");
             }
-
-            // I could image this, but it seemed that this order performed better
-            // by some percentage points than other orders.
-            factors.sort_by_key(|f| {
-                let radix = f.radix();
-                let is_odd = radix % 2;
-                (radix, is_odd)
-            });
 
             factors
         }
@@ -443,6 +443,18 @@ impl<D> RadixFFT<D> {
                     Complex32::new(1.0, 0.0),
                 ];
                 butterfly_radix7_dispatch(data, scratch, &twiddles, STRIDE);
+            }
+            Radix::Factor8 => {
+                let twiddles = [
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                ];
+                butterfly_radix8_dispatch(data, scratch, &twiddles, STRIDE);
             }
         }
 

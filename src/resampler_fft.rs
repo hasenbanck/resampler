@@ -309,10 +309,6 @@ impl FftResampler {
         let mut fft_factors_output = factors_out;
         fft_factors_output.push(Radix::Factor2);
 
-        // Optimize by merging consecutive Factor2s into Factor4s.
-        let fft_factors_input = ConversionConfig::optimize_factors(fft_factors_input);
-        let fft_factors_output = ConversionConfig::optimize_factors(fft_factors_output);
-
         let fft = RadixFFT::<Forward>::new(fft_factors_input);
         let ifft = RadixFFT::<Inverse>::new(fft_factors_output);
 

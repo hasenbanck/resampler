@@ -318,7 +318,7 @@ mod tests {
     fn test_butterfly_radix4_avx_fma_vs_scalar() {
         use crate::fft::butterflies::tests::TestSimdWidth;
         test_butterfly_against_scalar(
-            |src, dst, twiddles, p| butterfly_radix4_scalar::<4>(src, dst, twiddles, p),
+            butterfly_radix4_scalar::<4>,
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     avx::butterfly_radix4_stride1_avx_fma(src, dst, twiddles);
@@ -338,7 +338,7 @@ mod tests {
     fn test_butterfly_radix4_sse2_vs_scalar() {
         use crate::fft::butterflies::tests::TestSimdWidth;
         test_butterfly_against_scalar(
-            |src, dst, twiddles, p| butterfly_radix4_scalar::<2>(src, dst, twiddles, p),
+            butterfly_radix4_scalar::<2>,
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     sse2::butterfly_radix4_stride1_sse2(src, dst, twiddles);
@@ -358,7 +358,7 @@ mod tests {
     fn test_butterfly_radix4_sse4_2_vs_scalar() {
         use crate::fft::butterflies::tests::TestSimdWidth;
         test_butterfly_against_scalar(
-            |src, dst, twiddles, p| butterfly_radix4_scalar::<2>(src, dst, twiddles, p),
+            butterfly_radix4_scalar::<2>,
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     sse4_2::butterfly_radix4_stride1_sse4_2(src, dst, twiddles);
@@ -378,7 +378,7 @@ mod tests {
     fn test_butterfly_radix4_neon_vs_scalar() {
         use crate::fft::butterflies::tests::TestSimdWidth;
         test_butterfly_against_scalar(
-            |src, dst, twiddles, p| butterfly_radix4_scalar::<2>(src, dst, twiddles, p),
+            butterfly_radix4_scalar::<2>,
             |src, dst, twiddles, p| unsafe {
                 if p == 1 {
                     neon::butterfly_radix4_stride1_neon(src, dst, twiddles);
