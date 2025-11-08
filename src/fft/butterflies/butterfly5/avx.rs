@@ -67,34 +67,20 @@ pub(super) unsafe fn butterfly_radix5_stride1_avx_fma(
             let b2 = complex_mul_i_avx(t2_sub_t3, neg_imag_mask);
 
             // c1 = z0 + COS_2PI_5 * a1 + COS_4PI_5 * a2
-            let c1 = _mm256_add_ps(
-                z0,
-                _mm256_add_ps(
-                    _mm256_mul_ps(cos_2pi_5_vec, a1),
-                    _mm256_mul_ps(cos_4pi_5_vec, a2),
-                ),
-            );
+            let c1 = _mm256_fmadd_ps(cos_2pi_5_vec, a1, z0);
+            let c1 = _mm256_fmadd_ps(cos_4pi_5_vec, a2, c1);
 
             // c2 = z0 + COS_4PI_5 * a1 + COS_2PI_5 * a2
-            let c2 = _mm256_add_ps(
-                z0,
-                _mm256_add_ps(
-                    _mm256_mul_ps(cos_4pi_5_vec, a1),
-                    _mm256_mul_ps(cos_2pi_5_vec, a2),
-                ),
-            );
+            let c2 = _mm256_fmadd_ps(cos_4pi_5_vec, a1, z0);
+            let c2 = _mm256_fmadd_ps(cos_2pi_5_vec, a2, c2);
 
             // d1 = SIN_2PI_5 * b1 + SIN_4PI_5 * b2
-            let d1 = _mm256_add_ps(
-                _mm256_mul_ps(sin_2pi_5_vec, b1),
-                _mm256_mul_ps(sin_4pi_5_vec, b2),
-            );
+            let d1 = _mm256_mul_ps(sin_2pi_5_vec, b1);
+            let d1 = _mm256_fmadd_ps(sin_4pi_5_vec, b2, d1);
 
             // d2 = SIN_4PI_5 * b1 - SIN_2PI_5 * b2
-            let d2 = _mm256_sub_ps(
-                _mm256_mul_ps(sin_4pi_5_vec, b1),
-                _mm256_mul_ps(sin_2pi_5_vec, b2),
-            );
+            let d2 = _mm256_mul_ps(sin_2pi_5_vec, b2);
+            let d2 = _mm256_fmsub_ps(sin_4pi_5_vec, b1, d2);
 
             // Final outputs.
             let out0 = _mm256_add_ps(z0, sum_all);
@@ -276,34 +262,20 @@ pub(super) unsafe fn butterfly_radix5_generic_avx_fma(
             let b2 = complex_mul_i_avx(t2_sub_t3, neg_imag_mask);
 
             // c1 = z0 + COS_2PI_5 * a1 + COS_4PI_5 * a2
-            let c1 = _mm256_add_ps(
-                z0,
-                _mm256_add_ps(
-                    _mm256_mul_ps(cos_2pi_5_vec, a1),
-                    _mm256_mul_ps(cos_4pi_5_vec, a2),
-                ),
-            );
+            let c1 = _mm256_fmadd_ps(cos_2pi_5_vec, a1, z0);
+            let c1 = _mm256_fmadd_ps(cos_4pi_5_vec, a2, c1);
 
             // c2 = z0 + COS_4PI_5 * a1 + COS_2PI_5 * a2
-            let c2 = _mm256_add_ps(
-                z0,
-                _mm256_add_ps(
-                    _mm256_mul_ps(cos_4pi_5_vec, a1),
-                    _mm256_mul_ps(cos_2pi_5_vec, a2),
-                ),
-            );
+            let c2 = _mm256_fmadd_ps(cos_4pi_5_vec, a1, z0);
+            let c2 = _mm256_fmadd_ps(cos_2pi_5_vec, a2, c2);
 
             // d1 = SIN_2PI_5 * b1 + SIN_4PI_5 * b2
-            let d1 = _mm256_add_ps(
-                _mm256_mul_ps(sin_2pi_5_vec, b1),
-                _mm256_mul_ps(sin_4pi_5_vec, b2),
-            );
+            let d1 = _mm256_mul_ps(sin_2pi_5_vec, b1);
+            let d1 = _mm256_fmadd_ps(sin_4pi_5_vec, b2, d1);
 
             // d2 = SIN_4PI_5 * b1 - SIN_2PI_5 * b2
-            let d2 = _mm256_sub_ps(
-                _mm256_mul_ps(sin_4pi_5_vec, b1),
-                _mm256_mul_ps(sin_2pi_5_vec, b2),
-            );
+            let d2 = _mm256_mul_ps(sin_2pi_5_vec, b2);
+            let d2 = _mm256_fmsub_ps(sin_4pi_5_vec, b1, d2);
 
             // Final outputs.
             let out0 = _mm256_add_ps(z0, sum_all);

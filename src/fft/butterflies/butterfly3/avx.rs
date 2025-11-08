@@ -51,8 +51,7 @@ pub(super) unsafe fn butterfly_radix3_stride1_avx_fma(
             let out0 = _mm256_add_ps(z0, sum_t);
 
             // re_part = z0 - 0.5 * sum_t
-            let half_sum_t = _mm256_mul_ps(sum_t, half_vec);
-            let re_im_part = _mm256_sub_ps(z0, half_sum_t);
+            let re_im_part = _mm256_fnmadd_ps(sum_t, half_vec, z0);
 
             // sqrt3 multiplication
             let sqrt3_diff = complex_mul_sqrt3_i_avx(diff_t, sqrt3_2_vec);
@@ -183,8 +182,7 @@ pub(super) unsafe fn butterfly_radix3_generic_avx_fma(
             let out0 = _mm256_add_ps(z0, sum_t);
 
             // re_part = z0 - 0.5 * sum_t
-            let half_sum_t = _mm256_mul_ps(sum_t, half_vec);
-            let re_im_part = _mm256_sub_ps(z0, half_sum_t);
+            let re_im_part = _mm256_fnmadd_ps(sum_t, half_vec, z0);
 
             // sqrt3 multiplication
             let sqrt3_diff = complex_mul_sqrt3_i_avx(diff_t, sqrt3_2_vec);
