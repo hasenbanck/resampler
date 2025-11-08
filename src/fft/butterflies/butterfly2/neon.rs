@@ -80,14 +80,20 @@ pub(super) unsafe fn butterfly_radix2_generic_neon(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
+
     let samples = src.len();
     let half_samples = samples >> 1;
     let simd_iters = (half_samples >> 1) << 1;
 
     unsafe {
         for i in (0..simd_iters).step_by(2) {
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
 
             // Load 2 complex numbers from first half.
             let a_ptr = src.as_ptr().add(i) as *const f32;

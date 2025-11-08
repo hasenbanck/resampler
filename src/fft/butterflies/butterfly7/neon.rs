@@ -22,6 +22,17 @@ pub(super) unsafe fn butterfly_radix7_stride1_neon(
     let simd_iters = (seventh_samples / 2) * 2;
 
     unsafe {
+        let cos_2pi_7 = vdupq_n_f32(COS_2PI_7);
+        let sin_2pi_7 = vdupq_n_f32(SIN_2PI_7);
+        let cos_4pi_7 = vdupq_n_f32(COS_4PI_7);
+        let sin_4pi_7 = vdupq_n_f32(SIN_4PI_7);
+        let cos_6pi_7 = vdupq_n_f32(COS_6PI_7);
+        let sin_6pi_7 = vdupq_n_f32(SIN_6PI_7);
+
+        let neg_sin_2pi_7 = vdupq_n_f32(-SIN_2PI_7);
+        let neg_sin_4pi_7 = vdupq_n_f32(-SIN_4PI_7);
+        let neg_sin_6pi_7 = vdupq_n_f32(-SIN_6PI_7);
+
         let neg_imag = load_neg_imag_mask();
 
         for i in (0..simd_iters).step_by(2) {
@@ -56,17 +67,6 @@ pub(super) unsafe fn butterfly_radix7_stride1_neon(
             let w4 = vld1q_f32(tw_ptr.add(12)); // w4[i], w4[i+1]
             let w5 = vld1q_f32(tw_ptr.add(16)); // w5[i], w5[i+1]
             let w6 = vld1q_f32(tw_ptr.add(20)); // w6[i], w6[i+1]
-
-            // Preload trig constants early to hide latency.
-            let cos_2pi_7 = vdupq_n_f32(COS_2PI_7);
-            let sin_2pi_7 = vdupq_n_f32(SIN_2PI_7);
-            let cos_4pi_7 = vdupq_n_f32(COS_4PI_7);
-            let sin_4pi_7 = vdupq_n_f32(SIN_4PI_7);
-            let cos_6pi_7 = vdupq_n_f32(COS_6PI_7);
-            let sin_6pi_7 = vdupq_n_f32(SIN_6PI_7);
-            let neg_sin_2pi_7 = vdupq_n_f32(-SIN_2PI_7);
-            let neg_sin_4pi_7 = vdupq_n_f32(-SIN_4PI_7);
-            let neg_sin_6pi_7 = vdupq_n_f32(-SIN_6PI_7);
 
             let t1 = complex_mul(w1, z1);
             let t2 = complex_mul(w2, z2);
@@ -272,16 +272,33 @@ pub(super) unsafe fn butterfly_radix7_generic_neon(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
+
     let samples = src.len();
     let seventh_samples = samples / 7;
     let simd_iters = (seventh_samples / 2) * 2;
 
     unsafe {
+        let cos_2pi_7 = vdupq_n_f32(COS_2PI_7);
+        let sin_2pi_7 = vdupq_n_f32(SIN_2PI_7);
+        let cos_4pi_7 = vdupq_n_f32(COS_4PI_7);
+        let sin_4pi_7 = vdupq_n_f32(SIN_4PI_7);
+        let cos_6pi_7 = vdupq_n_f32(COS_6PI_7);
+        let sin_6pi_7 = vdupq_n_f32(SIN_6PI_7);
+
+        let neg_sin_2pi_7 = vdupq_n_f32(-SIN_2PI_7);
+        let neg_sin_4pi_7 = vdupq_n_f32(-SIN_4PI_7);
+        let neg_sin_6pi_7 = vdupq_n_f32(-SIN_6PI_7);
+
         let neg_imag = load_neg_imag_mask();
 
         for i in (0..simd_iters).step_by(2) {
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
 
             // Load z0 from first seventh.
             let z0_ptr = src.as_ptr().add(i) as *const f32;
@@ -314,17 +331,6 @@ pub(super) unsafe fn butterfly_radix7_generic_neon(
             let w4 = vld1q_f32(tw_ptr.add(12)); // w4[i], w4[i+1]
             let w5 = vld1q_f32(tw_ptr.add(16)); // w5[i], w5[i+1]
             let w6 = vld1q_f32(tw_ptr.add(20)); // w6[i], w6[i+1]
-
-            // Preload trig constants early to hide latency.
-            let cos_2pi_7 = vdupq_n_f32(COS_2PI_7);
-            let sin_2pi_7 = vdupq_n_f32(SIN_2PI_7);
-            let cos_4pi_7 = vdupq_n_f32(COS_4PI_7);
-            let sin_4pi_7 = vdupq_n_f32(SIN_4PI_7);
-            let cos_6pi_7 = vdupq_n_f32(COS_6PI_7);
-            let sin_6pi_7 = vdupq_n_f32(SIN_6PI_7);
-            let neg_sin_2pi_7 = vdupq_n_f32(-SIN_2PI_7);
-            let neg_sin_4pi_7 = vdupq_n_f32(-SIN_4PI_7);
-            let neg_sin_6pi_7 = vdupq_n_f32(-SIN_6PI_7);
 
             let t1 = complex_mul(z1, w1);
             let t2 = complex_mul(z2, w2);

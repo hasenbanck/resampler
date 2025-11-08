@@ -1,3 +1,5 @@
+use core::arch::x86_64::*;
+
 use super::{COS_2PI_7, COS_4PI_7, COS_6PI_7, SIN_2PI_7, SIN_4PI_7, SIN_6PI_7};
 use crate::fft::{
     Complex32,
@@ -14,8 +16,6 @@ pub(super) unsafe fn butterfly_radix7_stride1_sse4_2(
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
 ) {
-    use core::arch::x86_64::*;
-
     let samples = src.len();
     let seventh_samples = samples / 7;
     let simd_iters = (seventh_samples >> 1) << 1;
@@ -27,6 +27,10 @@ pub(super) unsafe fn butterfly_radix7_stride1_sse4_2(
         let sin_4pi_7 = _mm_set1_ps(SIN_4PI_7);
         let cos_6pi_7 = _mm_set1_ps(COS_6PI_7);
         let sin_6pi_7 = _mm_set1_ps(SIN_6PI_7);
+
+        let neg_sin_6pi_7 = _mm_set1_ps(-SIN_6PI_7);
+        let neg_sin_2pi_7 = _mm_set1_ps(-SIN_2PI_7);
+        let neg_sin_4pi_7 = _mm_set1_ps(-SIN_4PI_7);
 
         let negate_im = load_neg_imag_mask_sse4_2();
 
@@ -121,8 +125,6 @@ pub(super) unsafe fn butterfly_radix7_stride1_sse4_2(
             let out1 = _mm_add_ps(c1, d1);
 
             // out2: cos1=COS_4PI_7, sin1=SIN_4PI_7, cos2=COS_6PI_7, sin2=-SIN_6PI_7, cos3=COS_2PI_7, sin3=-SIN_2PI_7
-            let neg_sin_6pi_7 = _mm_set1_ps(-SIN_6PI_7);
-            let neg_sin_2pi_7 = _mm_set1_ps(-SIN_2PI_7);
             let c2 = _mm_add_ps(
                 z0,
                 _mm_add_ps(
@@ -151,7 +153,6 @@ pub(super) unsafe fn butterfly_radix7_stride1_sse4_2(
             let out3 = _mm_add_ps(c3, d3);
 
             // out4: cos1=COS_6PI_7, sin1=-SIN_6PI_7, cos2=COS_2PI_7, sin2=SIN_2PI_7, cos3=COS_4PI_7, sin3=-SIN_4PI_7
-            let neg_sin_4pi_7 = _mm_set1_ps(-SIN_4PI_7);
             let c4 = _mm_add_ps(
                 z0,
                 _mm_add_ps(
@@ -308,7 +309,10 @@ pub(super) unsafe fn butterfly_radix7_generic_sse4_2(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
-    use core::arch::x86_64::*;
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
 
     let samples = src.len();
     let seventh_samples = samples / 7;
@@ -322,11 +326,16 @@ pub(super) unsafe fn butterfly_radix7_generic_sse4_2(
         let cos_6pi_7 = _mm_set1_ps(COS_6PI_7);
         let sin_6pi_7 = _mm_set1_ps(SIN_6PI_7);
 
+        let neg_sin_6pi_7 = _mm_set1_ps(-SIN_6PI_7);
+        let neg_sin_2pi_7 = _mm_set1_ps(-SIN_2PI_7);
+        let neg_sin_4pi_7 = _mm_set1_ps(-SIN_4PI_7);
+
         let negate_im = load_neg_imag_mask_sse4_2();
 
         for i in (0..simd_iters).step_by(2) {
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
 
             // Load 2 complex numbers from each seventh.
             let z0_ptr = src.as_ptr().add(i) as *const f32;
@@ -393,11 +402,6 @@ pub(super) unsafe fn butterfly_radix7_generic_sse4_2(
             let b3 = _mm_xor_ps(b3_temp, negate_im);
 
             let out0 = _mm_add_ps(z0, sum_all);
-
-            // Compute outputs 1-6
-            let neg_sin_6pi_7 = _mm_set1_ps(-SIN_6PI_7);
-            let neg_sin_2pi_7 = _mm_set1_ps(-SIN_2PI_7);
-            let neg_sin_4pi_7 = _mm_set1_ps(-SIN_4PI_7);
 
             let c1 = _mm_add_ps(
                 z0,

@@ -1,3 +1,5 @@
+use core::arch::x86_64::*;
+
 use super::{COS_2PI_5, COS_4PI_5, SIN_2PI_5, SIN_4PI_5};
 use crate::fft::{
     Complex32,
@@ -14,8 +16,6 @@ pub(super) unsafe fn butterfly_radix5_stride1_sse2(
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
 ) {
-    use core::arch::x86_64::*;
-
     let samples = src.len();
     let fifth_samples = samples / 5;
     let simd_iters = (fifth_samples >> 1) << 1;
@@ -194,7 +194,10 @@ pub(super) unsafe fn butterfly_radix5_generic_sse2(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
-    use core::arch::x86_64::*;
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
 
     let samples = src.len();
     let fifth_samples = samples / 5;
@@ -209,8 +212,9 @@ pub(super) unsafe fn butterfly_radix5_generic_sse2(
         let negate_im = load_neg_imag_mask_sse2();
 
         for i in (0..simd_iters).step_by(2) {
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
 
             // Load 2 complex numbers from each fifth.
             let z0_ptr = src.as_ptr().add(i) as *const f32;

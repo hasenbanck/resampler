@@ -128,6 +128,11 @@ pub(super) unsafe fn butterfly_radix3_generic_neon(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
+
     let samples = src.len();
     let third_samples = samples / 3;
     let simd_iters = (third_samples >> 1) << 1;
@@ -141,8 +146,9 @@ pub(super) unsafe fn butterfly_radix3_generic_neon(
         let sqrt3_signs = vld1q_f32(SQRT3_PATTERN.0.as_ptr());
 
         for i in (0..simd_iters).step_by(2) {
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
 
             // Load z0 from first third (contiguous).
             let z0_ptr = src.as_ptr().add(i) as *const f32;

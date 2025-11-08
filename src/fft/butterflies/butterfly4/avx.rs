@@ -1,3 +1,5 @@
+use core::arch::x86_64::*;
+
 use crate::fft::{
     Complex32,
     butterflies::ops::{complex_mul_avx, complex_mul_i_avx, load_neg_imag_mask_avx},
@@ -13,8 +15,6 @@ pub(super) unsafe fn butterfly_radix4_stride1_avx_fma(
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
 ) {
-    use core::arch::x86_64::*;
-
     let samples = src.len();
     let quarter_samples = samples >> 2;
     let simd_iters = (quarter_samples >> 2) << 2;
@@ -131,7 +131,10 @@ pub(super) unsafe fn butterfly_radix4_generic_avx_fma(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
-    use core::arch::x86_64::*;
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
 
     let samples = src.len();
     let quarter_samples = samples >> 2;
@@ -141,11 +144,11 @@ pub(super) unsafe fn butterfly_radix4_generic_avx_fma(
         let neg_imag_mask = load_neg_imag_mask_avx();
 
         for i in (0..simd_iters).step_by(4) {
-            // Calculate twiddle indices.
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
-            let k2 = (i + 2) % stride;
-            let k3 = (i + 3) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
+            let k2 = k + 2 - ((k + 2 >= stride) as usize) * stride;
+            let k3 = k + 3 - ((k + 3 >= stride) as usize) * stride;
 
             // Load z0 from first quarter.
             let z0_ptr = src.as_ptr().add(i) as *const f32;

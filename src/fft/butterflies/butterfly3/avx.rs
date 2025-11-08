@@ -1,3 +1,5 @@
+use core::arch::x86_64::*;
+
 use super::SQRT3_2;
 use crate::fft::{
     Complex32,
@@ -11,13 +13,15 @@ pub(super) unsafe fn butterfly_radix3_stride1_avx_fma(
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
 ) {
-    use core::arch::x86_64::*;
-
     let samples = src.len();
     let third_samples = samples / 3;
     let simd_iters = (third_samples >> 2) << 2;
 
     unsafe {
+        let sqrt3_2_vec = _mm256_set_ps(
+            -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2,
+        );
+
         let half_vec = _mm256_set1_ps(0.5);
 
         for i in (0..simd_iters).step_by(4) {
@@ -51,7 +55,7 @@ pub(super) unsafe fn butterfly_radix3_stride1_avx_fma(
             let re_im_part = _mm256_sub_ps(z0, half_sum_t);
 
             // sqrt3 multiplication
-            let sqrt3_diff = complex_mul_sqrt3_i_avx(diff_t, SQRT3_2);
+            let sqrt3_diff = complex_mul_sqrt3_i_avx(diff_t, sqrt3_2_vec);
 
             let out1 = _mm256_add_ps(re_im_part, sqrt3_diff);
             let out2 = _mm256_sub_ps(re_im_part, sqrt3_diff);
@@ -128,20 +132,28 @@ pub(super) unsafe fn butterfly_radix3_generic_avx_fma(
     stage_twiddles: &[Complex32],
     stride: usize,
 ) {
-    use core::arch::x86_64::*;
+    // We convince the compiler here that stride can't be 0 to optimize better.
+    if stride == 0 {
+        return;
+    }
 
     let samples = src.len();
     let third_samples = samples / 3;
     let simd_iters = (third_samples >> 2) << 2;
 
     unsafe {
+        let sqrt3_2_vec = _mm256_set_ps(
+            -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2, -SQRT3_2, SQRT3_2,
+        );
+
         let half_vec = _mm256_set1_ps(0.5);
 
         for i in (0..simd_iters).step_by(4) {
-            let k0 = i % stride;
-            let k1 = (i + 1) % stride;
-            let k2 = (i + 2) % stride;
-            let k3 = (i + 3) % stride;
+            let k = i % stride;
+            let k0 = k;
+            let k1 = k + 1 - ((k + 1 >= stride) as usize) * stride;
+            let k2 = k + 2 - ((k + 2 >= stride) as usize) * stride;
+            let k3 = k + 3 - ((k + 3 >= stride) as usize) * stride;
 
             // Load z0
             let z0_ptr = src.as_ptr().add(i) as *const f32;
@@ -175,7 +187,7 @@ pub(super) unsafe fn butterfly_radix3_generic_avx_fma(
             let re_im_part = _mm256_sub_ps(z0, half_sum_t);
 
             // sqrt3 multiplication
-            let sqrt3_diff = complex_mul_sqrt3_i_avx(diff_t, SQRT3_2);
+            let sqrt3_diff = complex_mul_sqrt3_i_avx(diff_t, sqrt3_2_vec);
 
             let out1 = _mm256_add_ps(re_im_part, sqrt3_diff);
             let out2 = _mm256_sub_ps(re_im_part, sqrt3_diff);

@@ -28,12 +28,7 @@ pub(crate) fn complex_mul_i_avx(vec: __m256, neg_imag_mask: __m256) -> __m256 {
 
 /// Multiplies a complex vector by sqrt(3)/2 * i.
 #[target_feature(enable = "avx")]
-pub(crate) fn complex_mul_sqrt3_i_avx(vec: __m256, sqrt3_2: f32) -> __m256 {
+pub(crate) fn complex_mul_sqrt3_i_avx(vec: __m256, sqrt3_pattern: __m256) -> __m256 {
     let swapped = _mm256_shuffle_ps(vec, vec, 0b10_11_00_01);
-    _mm256_mul_ps(
-        swapped,
-        _mm256_set_ps(
-            -sqrt3_2, sqrt3_2, -sqrt3_2, sqrt3_2, -sqrt3_2, sqrt3_2, -sqrt3_2, sqrt3_2,
-        ),
-    )
+    _mm256_mul_ps(swapped, sqrt3_pattern)
 }
