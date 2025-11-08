@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use super::radix_fft::Radix;
 
-/// Optimize factors by merging: Factor4+Factor2->Factor8, Factor2x3->Factor8, Factor4x4->Factor8+Factor2, Factor2x2->Factor4.
+/// Optimize factors the merges power-of-two factors aggressively.
 pub(crate) fn optimize_factors(mut factors: Vec<Radix>) -> Vec<Radix> {
     factors.sort_by_key(|f| core::cmp::Reverse(f.radix()));
 
@@ -23,14 +23,21 @@ pub(crate) fn optimize_factors(mut factors: Vec<Radix>) -> Vec<Radix> {
 /// Try to apply any available transformation. Returns true if a transformation was applied.
 fn apply_transformations(factors: &mut Vec<Radix>) -> bool {
     const TRANSFORMATIONS: &[(&[Radix], &[Radix])] = &[
+        (&[Radix::Factor8, Radix::Factor2], &[Radix::Factor16]),
+        (&[Radix::Factor4, Radix::Factor4], &[Radix::Factor16]),
+        (
+            &[
+                Radix::Factor2,
+                Radix::Factor2,
+                Radix::Factor2,
+                Radix::Factor2,
+            ],
+            &[Radix::Factor16],
+        ),
         (&[Radix::Factor4, Radix::Factor2], &[Radix::Factor8]),
         (
             &[Radix::Factor2, Radix::Factor2, Radix::Factor2],
             &[Radix::Factor8],
-        ),
-        (
-            &[Radix::Factor4, Radix::Factor4],
-            &[Radix::Factor8, Radix::Factor2],
         ),
         (&[Radix::Factor2, Radix::Factor2], &[Radix::Factor4]),
     ];
@@ -86,7 +93,8 @@ mod tests {
             Radix::Factor2,
         ];
         let output = optimize_factors(input);
-        assert_eq!(output, vec![Radix::Factor8, Radix::Factor8]);
+        // Now optimizes to Factor16 + Factor4 instead of Factor8 + Factor8
+        assert_eq!(output, vec![Radix::Factor4, Radix::Factor16]);
     }
 
     #[test]
@@ -100,14 +108,10 @@ mod tests {
             Radix::Factor2,
         ];
         let output = optimize_factors(input);
+        // Now optimizes to Factor16 + Factor16 + Factor4 instead of Factor2 + Factor8 + Factor8 + Factor8
         assert_eq!(
             output,
-            vec![
-                Radix::Factor2,
-                Radix::Factor8,
-                Radix::Factor8,
-                Radix::Factor8,
-            ]
+            vec![Radix::Factor4, Radix::Factor16, Radix::Factor16,]
         );
     }
 
@@ -121,14 +125,10 @@ mod tests {
             Radix::Factor5,
         ];
         let output = optimize_factors(input);
+        // Now optimizes to Factor16 + Factor16 + Factor5 instead of Factor4 + Factor5 + Factor8 + Factor8
         assert_eq!(
             output,
-            vec![
-                Radix::Factor4,
-                Radix::Factor5,
-                Radix::Factor8,
-                Radix::Factor8,
-            ]
+            vec![Radix::Factor5, Radix::Factor16, Radix::Factor16,]
         );
     }
 
@@ -141,7 +141,8 @@ mod tests {
             Radix::Factor4,
         ];
         let output = optimize_factors(input);
-        assert_eq!(output, vec![Radix::Factor2, Radix::Factor8, Radix::Factor8]);
+        // Now optimizes to Factor16 + Factor8 instead of Factor2 + Factor8 + Factor8
+        assert_eq!(output, vec![Radix::Factor8, Radix::Factor16]);
     }
 
     #[test]
@@ -155,12 +156,33 @@ mod tests {
         let output = optimize_factors(input);
         assert_eq!(
             output,
-            vec![
-                Radix::Factor2,
-                Radix::Factor8,
-                Radix::Factor8,
-                Radix::Factor8,
-            ]
+            vec![Radix::Factor8, Radix::Factor8, Radix::Factor16,]
         );
+    }
+
+    #[test]
+    fn test_optimize_factors_to_factor16_from_factor8_and_factor2() {
+        let input = vec![Radix::Factor8, Radix::Factor2];
+        let output = optimize_factors(input);
+        assert_eq!(output, vec![Radix::Factor16]);
+    }
+
+    #[test]
+    fn test_optimize_factors_to_factor16_from_two_factor4s() {
+        let input = vec![Radix::Factor4, Radix::Factor4];
+        let output = optimize_factors(input);
+        assert_eq!(output, vec![Radix::Factor16]);
+    }
+
+    #[test]
+    fn test_optimize_factors_to_factor16_from_four_factor2s() {
+        let input = vec![
+            Radix::Factor2,
+            Radix::Factor2,
+            Radix::Factor2,
+            Radix::Factor2,
+        ];
+        let output = optimize_factors(input);
+        assert_eq!(output, vec![Radix::Factor16]);
     }
 }

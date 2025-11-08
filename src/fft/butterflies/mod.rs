@@ -1,3 +1,4 @@
+mod butterfly16;
 mod butterfly2;
 mod butterfly3;
 mod butterfly4;
@@ -47,6 +48,13 @@ pub(crate) use butterfly8::{
     butterfly_radix8_generic_avx_fma_dispatch, butterfly_radix8_generic_sse2_dispatch,
     butterfly_radix8_generic_sse4_2_dispatch, butterfly_radix8_stride1_avx_fma_dispatch,
     butterfly_radix8_stride1_sse2_dispatch, butterfly_radix8_stride1_sse4_2_dispatch,
+};
+pub(crate) use butterfly16::butterfly_radix16_dispatch;
+#[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
+pub(crate) use butterfly16::{
+    butterfly_radix16_generic_avx_fma_dispatch, butterfly_radix16_generic_sse2_dispatch,
+    butterfly_radix16_generic_sse4_2_dispatch, butterfly_radix16_stride1_avx_fma_dispatch,
+    butterfly_radix16_stride1_sse2_dispatch, butterfly_radix16_stride1_sse4_2_dispatch,
 };
 
 #[cfg(test)]
@@ -169,6 +177,9 @@ mod tests {
 
         for (stride, samples) in test_configs {
             if samples % radix != 0 {
+                continue;
+            }
+            if samples < stride * radix {
                 continue;
             }
 

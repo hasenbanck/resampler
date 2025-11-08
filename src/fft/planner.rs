@@ -179,7 +179,7 @@ impl ConversionConfig {
     }
 
     /// Decompose a power-of-2 multiplier into radix factors.
-    /// Prefers Factor8 for power-of-2 efficiency: 8 → Factor8, 16 → 2×Factor8, etc.
+    /// Prefers Factor16 > Factor8 > Factor4 > Factor2 for efficiency.
     fn decompose_multiplier(multiplier: usize) -> Vec<Radix> {
         if multiplier == 1 {
             return Vec::new();
@@ -189,18 +189,23 @@ impl ConversionConfig {
 
         let num_bits = multiplier.trailing_zeros() as usize;
 
-        // Prefer Factor8 for efficiency: decompose into 8s, 4s, and 2s.
-        let num_factor8 = num_bits / 3;
-        let remainder = num_bits % 3;
+        // Prefer Factor16 for maximum efficiency: decompose into 16s, then 8s, 4s, and 2s.
+        let num_factor16 = num_bits / 4;
+        let mut remainder = num_bits % 4;
 
-        let mut factors = vec![Radix::Factor8; num_factor8];
+        let mut factors = vec![Radix::Factor16; num_factor16];
 
-        // Handle remainder: 1 bit → Factor2, 2 bits → Factor4
-        match remainder {
-            0 => {} // No remainder
-            1 => factors.push(Radix::Factor2),
-            2 => factors.push(Radix::Factor4),
-            _ => unreachable!(),
+        // Handle remainder: 3 bits → Factor8, 2 bits → Factor4, 1 bit → Factor2
+        if remainder >= 3 {
+            factors.push(Radix::Factor8);
+            remainder -= 3;
+        }
+        if remainder >= 2 {
+            factors.push(Radix::Factor4);
+            remainder -= 2;
+        }
+        if remainder >= 1 {
+            factors.push(Radix::Factor2);
         }
 
         factors

@@ -1,3 +1,5 @@
+use core::f32::consts::FRAC_1_SQRT_2;
+
 use crate::fft::Complex32;
 
 #[cfg(all(
@@ -312,8 +314,6 @@ pub(super) fn butterfly_radix8_scalar<const WIDTH: usize>(
         // W_8^1 = exp(-i*π/4) = (1-i)/sqrt(2) ≈ 0.707 - 0.707i
         // W_8^2 = exp(-i*π/2) = -i
         // W_8^3 = exp(-i*3π/4) = (-1-i)/sqrt(2) ≈ -0.707 - 0.707i
-
-        use core::f32::consts::FRAC_1_SQRT_2;
 
         // X[0] = X_even[0] + X_odd[0]
         // X[4] = X_even[0] - X_odd[0]

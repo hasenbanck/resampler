@@ -20,8 +20,6 @@ pub(super) unsafe fn butterfly_radix8_stride1_neon(
     let simd_iters = (eighth_samples >> 1) << 1;
 
     unsafe {
-        let neg_imag_mask = load_neg_imag_mask();
-
         let w8_1 = vreinterpretq_f32_u32(vld1q_u32(
             [
                 FRAC_1_SQRT_2.to_bits(),
@@ -31,8 +29,9 @@ pub(super) unsafe fn butterfly_radix8_stride1_neon(
             ]
             .as_ptr(),
         ));
-
         let w8_3 = vdupq_n_f32(-FRAC_1_SQRT_2);
+
+        let neg_imag_mask = load_neg_imag_mask();
 
         for i in (0..simd_iters).step_by(2) {
             // Load 2 complex numbers from each eighth.
@@ -267,8 +266,6 @@ pub(super) unsafe fn butterfly_radix8_generic_neon(
     let simd_iters = (eighth_samples >> 1) << 1;
 
     unsafe {
-        let neg_imag_mask = load_neg_imag_mask();
-
         let w8_1 = vreinterpretq_f32_u32(vld1q_u32(
             [
                 FRAC_1_SQRT_2.to_bits(),
@@ -278,8 +275,9 @@ pub(super) unsafe fn butterfly_radix8_generic_neon(
             ]
             .as_ptr(),
         ));
-
         let w8_3 = vdupq_n_f32(-FRAC_1_SQRT_2);
+
+        let neg_imag_mask = load_neg_imag_mask();
 
         for i in (0..simd_iters).step_by(2) {
             let k = i % stride;

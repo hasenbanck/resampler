@@ -5,6 +5,7 @@ use super::{
     butterflies::{
         butterfly_radix2_dispatch, butterfly_radix3_dispatch, butterfly_radix4_dispatch,
         butterfly_radix5_dispatch, butterfly_radix7_dispatch, butterfly_radix8_dispatch,
+        butterfly_radix16_dispatch,
     },
     optimizer::optimize_factors,
     stockham_autosort::OutputLocation,
@@ -26,6 +27,8 @@ pub(crate) enum Radix {
     Factor7,
     /// Radix-8
     Factor8,
+    /// Radix-16
+    Factor16,
 }
 
 impl Radix {
@@ -38,6 +41,7 @@ impl Radix {
             Radix::Factor5 => 5,
             Radix::Factor7 => 7,
             Radix::Factor8 => 8,
+            Radix::Factor16 => 16,
         }
     }
 }
@@ -218,7 +222,7 @@ impl<D> RadixFFT<D> {
         simd_width
     }
 
-    /// Compute N/2 factors by removing one Factor2 or converting Factor4/Factor8 to appropriate factor.
+    /// Compute N/2 factors by removing one Factor2 or converting Factor4/Factor8/Factor16 to appropriate factor.
     fn compute_factors(factors: &[Radix]) -> Vec<Radix> {
         if factors.len() == 1 {
             let factor = factors[0];
@@ -226,6 +230,7 @@ impl<D> RadixFFT<D> {
                 Radix::Factor2 => Vec::new(),
                 Radix::Factor4 => vec![Radix::Factor2],
                 Radix::Factor8 => vec![Radix::Factor4],
+                Radix::Factor16 => vec![Radix::Factor8],
                 _ => panic!("Unsupported single factor for N/2 optimization: {factor:?}"),
             }
         } else {
@@ -233,12 +238,14 @@ impl<D> RadixFFT<D> {
 
             if let Some(pos) = factors.iter().position(|&f| f == Radix::Factor2) {
                 factors.remove(pos);
+            } else if let Some(pos) = factors.iter().position(|&f| f == Radix::Factor16) {
+                factors[pos] = Radix::Factor8;
             } else if let Some(pos) = factors.iter().position(|&f| f == Radix::Factor8) {
                 factors[pos] = Radix::Factor4;
             } else if let Some(pos) = factors.iter().position(|&f| f == Radix::Factor4) {
                 factors[pos] = Radix::Factor2;
             } else {
-                panic!("Even-length FFT must have at least one Factor2, Factor4, or Factor8");
+                panic!("Even-length FFT must have at least one Factor2, Factor4, Factor8, or Factor16");
             }
 
             factors
@@ -455,6 +462,26 @@ impl<D> RadixFFT<D> {
                     Complex32::new(1.0, 0.0),
                 ];
                 butterfly_radix8_dispatch(data, scratch, &twiddles, STRIDE);
+            }
+            Radix::Factor16 => {
+                let twiddles = [
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                    Complex32::new(1.0, 0.0),
+                ];
+                butterfly_radix16_dispatch(data, scratch, &twiddles, STRIDE);
             }
         }
 

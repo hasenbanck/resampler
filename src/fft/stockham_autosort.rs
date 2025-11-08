@@ -15,6 +15,8 @@ macro_rules! define_stockham_autosort {
         $butterfly_7_gen:path,
         $butterfly_8_p1:path,
         $butterfly_8_gen:path,
+        $butterfly_16_p1:path,
+        $butterfly_16_gen:path,
         cfg = $cfg:meta
     ) => {
         /// Performs an out-of-place mixed-radix FFT using the Stockham Autosort algorithm.
@@ -82,6 +84,8 @@ macro_rules! define_stockham_autosort {
                     (Radix::Factor7, _) => $butterfly_7_gen(input, output, stage_twiddles, stride),
                     (Radix::Factor8, 1) => $butterfly_8_p1(input, output, stage_twiddles),
                     (Radix::Factor8, _) => $butterfly_8_gen(input, output, stage_twiddles, stride),
+                    (Radix::Factor16, 1) => $butterfly_16_p1(input, output, stage_twiddles),
+                    (Radix::Factor16, _) => $butterfly_16_gen(input, output, stage_twiddles, stride),
                 }
 
                 // Swap input and output buffers for next stage.
@@ -114,6 +118,8 @@ define_stockham_autosort!(
     crate::fft::butterflies::butterfly_radix7_generic_avx_fma_dispatch,
     crate::fft::butterflies::butterfly_radix8_stride1_avx_fma_dispatch,
     crate::fft::butterflies::butterfly_radix8_generic_avx_fma_dispatch,
+    crate::fft::butterflies::butterfly_radix16_stride1_avx_fma_dispatch,
+    crate::fft::butterflies::butterfly_radix16_generic_avx_fma_dispatch,
     cfg = all(target_arch = "x86_64", not(feature = "no_std"))
 );
 
@@ -131,6 +137,8 @@ define_stockham_autosort!(
     crate::fft::butterflies::butterfly_radix7_generic_sse2_dispatch,
     crate::fft::butterflies::butterfly_radix8_stride1_sse2_dispatch,
     crate::fft::butterflies::butterfly_radix8_generic_sse2_dispatch,
+    crate::fft::butterflies::butterfly_radix16_stride1_sse2_dispatch,
+    crate::fft::butterflies::butterfly_radix16_generic_sse2_dispatch,
     cfg = all(target_arch = "x86_64", not(feature = "no_std"))
 );
 
@@ -148,6 +156,8 @@ define_stockham_autosort!(
     crate::fft::butterflies::butterfly_radix7_generic_sse4_2_dispatch,
     crate::fft::butterflies::butterfly_radix8_stride1_sse4_2_dispatch,
     crate::fft::butterflies::butterfly_radix8_generic_sse4_2_dispatch,
+    crate::fft::butterflies::butterfly_radix16_stride1_sse4_2_dispatch,
+    crate::fft::butterflies::butterfly_radix16_generic_sse4_2_dispatch,
     cfg = all(target_arch = "x86_64", not(feature = "no_std"))
 );
 
@@ -196,6 +206,7 @@ pub(crate) fn stockham_autosort(
     use crate::fft::butterflies::{
         butterfly_radix2_dispatch, butterfly_radix3_dispatch, butterfly_radix4_dispatch,
         butterfly_radix5_dispatch, butterfly_radix7_dispatch, butterfly_radix8_dispatch,
+        butterfly_radix16_dispatch,
     };
 
     let n = data.len();
@@ -228,6 +239,7 @@ pub(crate) fn stockham_autosort(
             Radix::Factor5 => butterfly_radix5_dispatch(input, output, stage_twiddles, stride),
             Radix::Factor7 => butterfly_radix7_dispatch(input, output, stage_twiddles, stride),
             Radix::Factor8 => butterfly_radix8_dispatch(input, output, stage_twiddles, stride),
+            Radix::Factor16 => butterfly_radix16_dispatch(input, output, stage_twiddles, stride),
         }
 
         // Swap input and output buffers for next stage.
