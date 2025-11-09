@@ -58,15 +58,7 @@ pub(super) unsafe fn butterfly_radix2_stride1_neon(
         }
     }
 
-    for i in simd_iters..half_samples {
-        let twiddle = stage_twiddles[i];
-        let a = src[i];
-        let b = twiddle.mul(&src[i + half_samples]);
-
-        let j = i << 1;
-        dst[j] = a.add(&b);
-        dst[j + 1] = a.sub(&b);
-    }
+    super::butterfly_radix2_scalar::<2>(src, dst, stage_twiddles, 1, simd_iters);
 }
 
 /// Performs a single radix-2 Stockham butterfly stage for p>1 (out-of-place, NEON).
@@ -132,15 +124,5 @@ pub(super) unsafe fn butterfly_radix2_generic_neon(
         }
     }
 
-    for i in simd_iters..half_samples {
-        let k = i % stride;
-        let twiddle = stage_twiddles[i];
-
-        let a = src[i];
-        let b = twiddle.mul(&src[i + half_samples]);
-
-        let j = (i << 1) - k;
-        dst[j] = a.add(&b);
-        dst[j + stride] = a.sub(&b);
-    }
+    super::butterfly_radix2_scalar::<2>(src, dst, stage_twiddles, stride, simd_iters);
 }

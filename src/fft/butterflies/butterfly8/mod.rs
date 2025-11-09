@@ -103,14 +103,14 @@ pub(crate) fn butterfly_radix8_dispatch(
     }
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
-    butterfly_radix8_scalar::<4>(src, dst, stage_twiddles, stride);
+    butterfly_radix8_scalar::<4>(src, dst, stage_twiddles, stride, 0);
     #[cfg(all(
         not(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma")),
         not(target_arch = "aarch64")
     ))]
-    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, stride);
+    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, stride, 0);
     #[cfg(target_arch = "aarch64")]
-    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, stride);
+    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, stride, 0);
 }
 
 /// AVX+FMA dispatcher for p1 (stride=1) variant
@@ -128,7 +128,7 @@ pub(crate) fn butterfly_radix8_stride1_avx_fma_dispatch(
         return unsafe { avx::butterfly_radix8_stride1_avx_fma(src, dst, stage_twiddles) };
     }
 
-    butterfly_radix8_scalar::<4>(src, dst, stage_twiddles, 1);
+    butterfly_radix8_scalar::<4>(src, dst, stage_twiddles, 1, 0);
 }
 
 /// AVX+FMA dispatcher for generic (stride>1) variant
@@ -147,7 +147,7 @@ pub(crate) fn butterfly_radix8_generic_avx_fma_dispatch(
         return unsafe { avx::butterfly_radix8_generic_avx_fma(src, dst, stage_twiddles, stride) };
     }
 
-    butterfly_radix8_scalar::<4>(src, dst, stage_twiddles, stride);
+    butterfly_radix8_scalar::<4>(src, dst, stage_twiddles, stride, 0);
 }
 
 /// SSE2 dispatcher for p1 (stride=1) variant
@@ -165,7 +165,7 @@ pub(crate) fn butterfly_radix8_stride1_sse2_dispatch(
         return unsafe { sse2::butterfly_radix8_stride1_sse2(src, dst, stage_twiddles) };
     }
 
-    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, 1);
+    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, 1, 0);
 }
 
 /// SSE2 dispatcher for generic (stride>1) variant
@@ -184,7 +184,7 @@ pub(crate) fn butterfly_radix8_generic_sse2_dispatch(
         return unsafe { sse2::butterfly_radix8_generic_sse2(src, dst, stage_twiddles, stride) };
     }
 
-    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, stride);
+    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, stride, 0);
 }
 
 /// SSE4.2 dispatcher for p1 (stride=1) variant
@@ -202,7 +202,7 @@ pub(crate) fn butterfly_radix8_stride1_sse4_2_dispatch(
         return unsafe { sse4_2::butterfly_radix8_stride1_sse4_2(src, dst, stage_twiddles) };
     }
 
-    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, 1);
+    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, 1, 0);
 }
 
 /// SSE4.2 dispatcher for generic (stride>1) variant
@@ -223,7 +223,7 @@ pub(crate) fn butterfly_radix8_generic_sse4_2_dispatch(
         };
     }
 
-    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, stride);
+    butterfly_radix8_scalar::<2>(src, dst, stage_twiddles, stride, 0);
 }
 
 /// Performs a single radix-8 Stockham butterfly stage (out-of-place, scalar).
@@ -241,13 +241,14 @@ pub(super) fn butterfly_radix8_scalar<const WIDTH: usize>(
     dst: &mut [Complex32],
     stage_twiddles: &[Complex32],
     stride: usize,
+    start_index: usize,
 ) {
     let samples = src.len();
     let eighth_samples = samples >> 3;
     let simd_iters = (eighth_samples / WIDTH) * WIDTH;
 
     // Process iterations using packed twiddle format.
-    for i in 0..simd_iters {
+    for i in start_index..simd_iters {
         let k = i % stride;
 
         // Calculate twiddle indices in packed format (width-aware).
@@ -524,7 +525,7 @@ mod tests {
             }
 
             let mut dst = vec![Complex32::zero(); 8];
-            butterfly_radix8_scalar::<2>(input, &mut dst, &twiddles, stride);
+            butterfly_radix8_scalar::<2>(input, &mut dst, &twiddles, stride, 0);
 
             let expected = naive_complex_dft(input);
 

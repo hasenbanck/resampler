@@ -90,31 +90,7 @@ pub(super) unsafe fn butterfly_radix3_stride1_neon(
         }
     }
 
-    for i in simd_iters..third_samples {
-        let w1 = stage_twiddles[i * 2];
-        let w2 = stage_twiddles[i * 2 + 1];
-
-        let z0 = src[i];
-        let z1 = src[i + third_samples];
-        let z2 = src[i + third_samples * 2];
-
-        let t1 = w1.mul(&z1);
-        let t2 = w2.mul(&z2);
-
-        let sum_t = t1.add(&t2);
-        let diff_t = t1.sub(&t2);
-
-        let j = 3 * i;
-        dst[j] = z0.add(&sum_t);
-
-        let re_part = z0.re - 0.5 * sum_t.re;
-        let im_part = z0.im - 0.5 * sum_t.im;
-        let sqrt3_diff_re = SQRT3_2 * diff_t.im;
-        let sqrt3_diff_im = -SQRT3_2 * diff_t.re;
-
-        dst[j + 1] = Complex32::new(re_part + sqrt3_diff_re, im_part + sqrt3_diff_im);
-        dst[j + 2] = Complex32::new(re_part - sqrt3_diff_re, im_part - sqrt3_diff_im);
-    }
+    super::butterfly_radix3_scalar::<2>(src, dst, stage_twiddles, 1, simd_iters);
 }
 
 /// Performs a single radix-3 Stockham butterfly stage for p>1 (out-of-place, NEON).
@@ -218,30 +194,5 @@ pub(super) unsafe fn butterfly_radix3_generic_neon(
         }
     }
 
-    for i in simd_iters..third_samples {
-        let k = i % stride;
-        let w1 = stage_twiddles[i * 2];
-        let w2 = stage_twiddles[i * 2 + 1];
-
-        let z0 = src[i];
-        let z1 = src[i + third_samples];
-        let z2 = src[i + third_samples * 2];
-
-        let t1 = w1.mul(&z1);
-        let t2 = w2.mul(&z2);
-
-        let sum_t = t1.add(&t2);
-        let diff_t = t1.sub(&t2);
-
-        let j = 3 * i - 2 * k;
-        dst[j] = z0.add(&sum_t);
-
-        let re_part = z0.re - 0.5 * sum_t.re;
-        let im_part = z0.im - 0.5 * sum_t.im;
-        let sqrt3_diff_re = SQRT3_2 * diff_t.im;
-        let sqrt3_diff_im = -SQRT3_2 * diff_t.re;
-
-        dst[j + stride] = Complex32::new(re_part + sqrt3_diff_re, im_part + sqrt3_diff_im);
-        dst[j + stride * 2] = Complex32::new(re_part - sqrt3_diff_re, im_part - sqrt3_diff_im);
-    }
+    super::butterfly_radix3_scalar::<2>(src, dst, stage_twiddles, stride, simd_iters);
 }

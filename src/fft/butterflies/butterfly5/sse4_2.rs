@@ -145,49 +145,7 @@ pub(super) unsafe fn butterfly_radix5_stride1_sse4_2(
         }
     }
 
-    for i in simd_iters..fifth_samples {
-        let w1 = stage_twiddles[i * 4];
-        let w2 = stage_twiddles[i * 4 + 1];
-        let w3 = stage_twiddles[i * 4 + 2];
-        let w4 = stage_twiddles[i * 4 + 3];
-
-        let z0 = src[i];
-        let z1 = src[i + fifth_samples];
-        let z2 = src[i + fifth_samples * 2];
-        let z3 = src[i + fifth_samples * 3];
-        let z4 = src[i + fifth_samples * 4];
-
-        let t1 = w1.mul(&z1);
-        let t2 = w2.mul(&z2);
-        let t3 = w3.mul(&z3);
-        let t4 = w4.mul(&z4);
-
-        let sum_all = t1.add(&t2).add(&t3).add(&t4);
-
-        let a1 = t1.add(&t4);
-        let a2 = t2.add(&t3);
-        let b1_re = t1.im - t4.im;
-        let b1_im = t4.re - t1.re;
-        let b2_re = t2.im - t3.im;
-        let b2_im = t3.re - t2.re;
-
-        let c1_re = z0.re + COS_2PI_5 * a1.re + COS_4PI_5 * a2.re;
-        let c1_im = z0.im + COS_2PI_5 * a1.im + COS_4PI_5 * a2.im;
-        let c2_re = z0.re + COS_4PI_5 * a1.re + COS_2PI_5 * a2.re;
-        let c2_im = z0.im + COS_4PI_5 * a1.im + COS_2PI_5 * a2.im;
-
-        let d1_re = SIN_2PI_5 * b1_re + SIN_4PI_5 * b2_re;
-        let d1_im = SIN_2PI_5 * b1_im + SIN_4PI_5 * b2_im;
-        let d2_re = SIN_4PI_5 * b1_re - SIN_2PI_5 * b2_re;
-        let d2_im = SIN_4PI_5 * b1_im - SIN_2PI_5 * b2_im;
-
-        let j = 5 * i;
-        dst[j] = z0.add(&sum_all);
-        dst[j + 1] = Complex32::new(c1_re + d1_re, c1_im + d1_im);
-        dst[j + 2] = Complex32::new(c2_re + d2_re, c2_im + d2_im);
-        dst[j + 3] = Complex32::new(c2_re - d2_re, c2_im - d2_im);
-        dst[j + 4] = Complex32::new(c1_re - d1_re, c1_im - d1_im);
-    }
+    super::butterfly_radix5_scalar::<2>(src, dst, stage_twiddles, 1, simd_iters);
 }
 
 /// Performs a single radix-5 Stockham butterfly stage for p>1 (out-of-place, SSE4.2).
@@ -314,48 +272,5 @@ pub(super) unsafe fn butterfly_radix5_generic_sse4_2(
         }
     }
 
-    for i in simd_iters..fifth_samples {
-        let k = i % stride;
-        let w1 = stage_twiddles[i * 4];
-        let w2 = stage_twiddles[i * 4 + 1];
-        let w3 = stage_twiddles[i * 4 + 2];
-        let w4 = stage_twiddles[i * 4 + 3];
-
-        let z0 = src[i];
-        let z1 = src[i + fifth_samples];
-        let z2 = src[i + fifth_samples * 2];
-        let z3 = src[i + fifth_samples * 3];
-        let z4 = src[i + fifth_samples * 4];
-
-        let t1 = w1.mul(&z1);
-        let t2 = w2.mul(&z2);
-        let t3 = w3.mul(&z3);
-        let t4 = w4.mul(&z4);
-
-        let sum_all = t1.add(&t2).add(&t3).add(&t4);
-
-        let a1 = t1.add(&t4);
-        let a2 = t2.add(&t3);
-        let b1_re = t1.im - t4.im;
-        let b1_im = t4.re - t1.re;
-        let b2_re = t2.im - t3.im;
-        let b2_im = t3.re - t2.re;
-
-        let c1_re = z0.re + COS_2PI_5 * a1.re + COS_4PI_5 * a2.re;
-        let c1_im = z0.im + COS_2PI_5 * a1.im + COS_4PI_5 * a2.im;
-        let c2_re = z0.re + COS_4PI_5 * a1.re + COS_2PI_5 * a2.re;
-        let c2_im = z0.im + COS_4PI_5 * a1.im + COS_2PI_5 * a2.im;
-
-        let d1_re = SIN_2PI_5 * b1_re + SIN_4PI_5 * b2_re;
-        let d1_im = SIN_2PI_5 * b1_im + SIN_4PI_5 * b2_im;
-        let d2_re = SIN_4PI_5 * b1_re - SIN_2PI_5 * b2_re;
-        let d2_im = SIN_4PI_5 * b1_im - SIN_2PI_5 * b2_im;
-
-        let j = 5 * i - 4 * k;
-        dst[j] = z0.add(&sum_all);
-        dst[j + stride] = Complex32::new(c1_re + d1_re, c1_im + d1_im);
-        dst[j + stride * 4] = Complex32::new(c1_re - d1_re, c1_im - d1_im);
-        dst[j + stride * 2] = Complex32::new(c2_re + d2_re, c2_im + d2_im);
-        dst[j + stride * 3] = Complex32::new(c2_re - d2_re, c2_im - d2_im);
-    }
+    super::butterfly_radix5_scalar::<2>(src, dst, stage_twiddles, stride, simd_iters);
 }

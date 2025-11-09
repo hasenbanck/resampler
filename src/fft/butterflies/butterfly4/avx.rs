@@ -92,32 +92,7 @@ pub(super) unsafe fn butterfly_radix4_stride1_avx_fma(
         }
     }
 
-    for i in simd_iters..quarter_samples {
-        let w1 = stage_twiddles[i * 3];
-        let w2 = stage_twiddles[i * 3 + 1];
-        let w3 = stage_twiddles[i * 3 + 2];
-
-        let z0 = src[i];
-        let z1 = src[i + quarter_samples];
-        let z2 = src[i + quarter_samples * 2];
-        let z3 = src[i + quarter_samples * 3];
-
-        let t1 = w1.mul(&z1);
-        let t2 = w2.mul(&z2);
-        let t3 = w3.mul(&z3);
-
-        let a0 = z0.add(&t2);
-        let a1 = z0.sub(&t2);
-        let a2 = t1.add(&t3);
-        let a3_re = t1.im - t3.im;
-        let a3_im = t3.re - t1.re;
-
-        let j = 4 * i;
-        dst[j] = a0.add(&a2);
-        dst[j + 2] = a0.sub(&a2);
-        dst[j + 1] = Complex32::new(a1.re + a3_re, a1.im + a3_im);
-        dst[j + 3] = Complex32::new(a1.re - a3_re, a1.im - a3_im);
-    }
+    super::butterfly_radix4_scalar::<4>(src, dst, stage_twiddles, 1, simd_iters);
 }
 
 /// Performs a single radix-4 Stockham butterfly stage for p>1 (out-of-place, AVX+FMA).
@@ -240,31 +215,5 @@ pub(super) unsafe fn butterfly_radix4_generic_avx_fma(
         }
     }
 
-    for i in simd_iters..quarter_samples {
-        let k = i % stride;
-        let w1 = stage_twiddles[i * 3];
-        let w2 = stage_twiddles[i * 3 + 1];
-        let w3 = stage_twiddles[i * 3 + 2];
-
-        let z0 = src[i];
-        let z1 = src[i + quarter_samples];
-        let z2 = src[i + quarter_samples * 2];
-        let z3 = src[i + quarter_samples * 3];
-
-        let t1 = w1.mul(&z1);
-        let t2 = w2.mul(&z2);
-        let t3 = w3.mul(&z3);
-
-        let a0 = z0.add(&t2);
-        let a1 = z0.sub(&t2);
-        let a2 = t1.add(&t3);
-        let a3_re = t1.im - t3.im;
-        let a3_im = t3.re - t1.re;
-
-        let j = 4 * i - 3 * k;
-        dst[j] = a0.add(&a2);
-        dst[j + stride * 2] = a0.sub(&a2);
-        dst[j + stride] = Complex32::new(a1.re + a3_re, a1.im + a3_im);
-        dst[j + stride * 3] = Complex32::new(a1.re - a3_re, a1.im - a3_im);
-    }
+    super::butterfly_radix4_scalar::<4>(src, dst, stage_twiddles, stride, simd_iters);
 }
