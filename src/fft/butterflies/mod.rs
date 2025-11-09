@@ -134,7 +134,7 @@ mod tests {
         simd_width: TestSimdWidth,
         test_name: &str,
     ) where
-        F: Fn(&[Complex32], &mut [Complex32], &[Complex32], usize),
+        F: Fn(&[Complex32], &mut [Complex32], &[Complex32], usize, usize),
         G: Fn(&[Complex32], &mut [Complex32], &[Complex32], usize),
     {
         let test_configs = vec![
@@ -247,7 +247,7 @@ mod tests {
             let mut dst_scalar = vec![Complex32::zero(); samples];
             let mut dst_simd = vec![Complex32::zero(); samples];
 
-            scalar_fn(&src, &mut dst_scalar, &twiddles, stride);
+            scalar_fn(&src, &mut dst_scalar, &twiddles, stride, 0);
             simd_fn(&src, &mut dst_simd, &twiddles, stride);
 
             let context = format!("{test_name} with p={stride}, samples={samples}");
@@ -279,7 +279,7 @@ mod tests {
                 let mut dst_scalar2 = vec![Complex32::zero(); samples];
                 let mut dst_simd2 = vec![Complex32::zero(); samples];
 
-                scalar_fn(&src, &mut dst_scalar2, &twiddles, stride);
+                scalar_fn(&src, &mut dst_scalar2, &twiddles, stride, 0);
                 simd_fn(&src, &mut dst_simd2, &twiddles, stride);
 
                 let context2 =
