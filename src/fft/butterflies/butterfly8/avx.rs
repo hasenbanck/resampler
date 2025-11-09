@@ -7,8 +7,9 @@ use crate::fft::{
 
 /// Performs a single radix-8 Stockham butterfly stage for stride=1 (out-of-place, AVX+FMA).
 ///
-/// This is a specialized version for the stride=1 case (first stage) that uses the unpack-permute
-/// pattern to enable sequential SIMD stores. For stride=1, output indices are sequential: j=8*i.
+/// This is a specialized version for the stride=1 case (first stage) that uses chunked streaming
+/// to reduce register pressure. Processes outputs in two groups of 4 to minimize spilling.
+/// For stride=1, output indices are sequential: j=8*i.
 #[target_feature(enable = "avx,fma")]
 pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
     src: &[Complex32],
@@ -142,17 +143,16 @@ pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
             // out7 = x_even_3 - W_8^3 * x_odd_3
             let out7 = _mm256_sub_ps(x_even_3, w8_3_x_odd_3);
 
-            // Interleave 8 outputs for sequential storage: [out0[0], out1[0], ..., out7[0], out0[1], ...]
+            // Chunked interleaving: process out0-3 first, then out4-7 to reduce register pressure.
+            let j = 8 * i;
+            let dst_ptr = dst.as_mut_ptr().add(j) as *mut f32;
+
+            // First chunk: Interleave out0-3 and store.
             let out0_pd = _mm256_castps_pd(out0);
             let out1_pd = _mm256_castps_pd(out1);
             let out2_pd = _mm256_castps_pd(out2);
             let out3_pd = _mm256_castps_pd(out3);
-            let out4_pd = _mm256_castps_pd(out4);
-            let out5_pd = _mm256_castps_pd(out5);
-            let out6_pd = _mm256_castps_pd(out6);
-            let out7_pd = _mm256_castps_pd(out7);
 
-            // Extract 128-bit lanes.
             let out0_lo = _mm256_castpd256_pd128(out0_pd);
             let out0_hi = _mm256_extractf128_pd(out0_pd, 1);
             let out1_lo = _mm256_castpd256_pd128(out1_pd);
@@ -161,6 +161,39 @@ pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
             let out2_hi = _mm256_extractf128_pd(out2_pd, 1);
             let out3_lo = _mm256_castpd256_pd128(out3_pd);
             let out3_hi = _mm256_extractf128_pd(out3_pd, 1);
+
+            // result0: [out0[0], out1[0], out2[0], out3[0]]
+            let temp0_lo = _mm_unpacklo_pd(out0_lo, out1_lo);
+            let temp0_hi = _mm_unpacklo_pd(out2_lo, out3_lo);
+            let result0 = _mm256_castpd_ps(_mm256_set_m128d(temp0_hi, temp0_lo));
+
+            // result2: [out0[1], out1[1], out2[1], out3[1]]
+            let temp2_lo = _mm_unpackhi_pd(out0_lo, out1_lo);
+            let temp2_hi = _mm_unpackhi_pd(out2_lo, out3_lo);
+            let result2 = _mm256_castpd_ps(_mm256_set_m128d(temp2_hi, temp2_lo));
+
+            // result4: [out0[2], out1[2], out2[2], out3[2]]
+            let temp4_lo = _mm_unpacklo_pd(out0_hi, out1_hi);
+            let temp4_hi = _mm_unpacklo_pd(out2_hi, out3_hi);
+            let result4 = _mm256_castpd_ps(_mm256_set_m128d(temp4_hi, temp4_lo));
+
+            // result6: [out0[3], out1[3], out2[3], out3[3]]
+            let temp6_lo = _mm_unpackhi_pd(out0_hi, out1_hi);
+            let temp6_hi = _mm_unpackhi_pd(out2_hi, out3_hi);
+            let result6 = _mm256_castpd_ps(_mm256_set_m128d(temp6_hi, temp6_lo));
+
+            // Store first chunk.
+            _mm256_storeu_ps(dst_ptr, result0);
+            _mm256_storeu_ps(dst_ptr.add(16), result2);
+            _mm256_storeu_ps(dst_ptr.add(32), result4);
+            _mm256_storeu_ps(dst_ptr.add(48), result6);
+
+            // Second chunk: Interleave out4-7 and store.
+            let out4_pd = _mm256_castps_pd(out4);
+            let out5_pd = _mm256_castps_pd(out5);
+            let out6_pd = _mm256_castps_pd(out6);
+            let out7_pd = _mm256_castps_pd(out7);
+
             let out4_lo = _mm256_castpd256_pd128(out4_pd);
             let out4_hi = _mm256_extractf128_pd(out4_pd, 1);
             let out5_lo = _mm256_castpd256_pd128(out5_pd);
@@ -170,57 +203,30 @@ pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
             let out7_lo = _mm256_castpd256_pd128(out7_pd);
             let out7_hi = _mm256_extractf128_pd(out7_pd, 1);
 
-            // Build 8 result vectors by interleaving pairs from the low and high lanes.
-            // result0: [out0[0], out1[0], out2[0], out3[0]]
-            let temp0_lo = _mm_unpacklo_pd(out0_lo, out1_lo);
-            let temp0_hi = _mm_unpacklo_pd(out2_lo, out3_lo);
-            let result0 = _mm256_castpd_ps(_mm256_set_m128d(temp0_hi, temp0_lo));
-
             // result1: [out4[0], out5[0], out6[0], out7[0]]
             let temp1_lo = _mm_unpacklo_pd(out4_lo, out5_lo);
             let temp1_hi = _mm_unpacklo_pd(out6_lo, out7_lo);
             let result1 = _mm256_castpd_ps(_mm256_set_m128d(temp1_hi, temp1_lo));
-
-            // result2: [out0[1], out1[1], out2[1], out3[1]]
-            let temp2_lo = _mm_unpackhi_pd(out0_lo, out1_lo);
-            let temp2_hi = _mm_unpackhi_pd(out2_lo, out3_lo);
-            let result2 = _mm256_castpd_ps(_mm256_set_m128d(temp2_hi, temp2_lo));
 
             // result3: [out4[1], out5[1], out6[1], out7[1]]
             let temp3_lo = _mm_unpackhi_pd(out4_lo, out5_lo);
             let temp3_hi = _mm_unpackhi_pd(out6_lo, out7_lo);
             let result3 = _mm256_castpd_ps(_mm256_set_m128d(temp3_hi, temp3_lo));
 
-            // result4: [out0[2], out1[2], out2[2], out3[2]]
-            let temp4_lo = _mm_unpacklo_pd(out0_hi, out1_hi);
-            let temp4_hi = _mm_unpacklo_pd(out2_hi, out3_hi);
-            let result4 = _mm256_castpd_ps(_mm256_set_m128d(temp4_hi, temp4_lo));
-
             // result5: [out4[2], out5[2], out6[2], out7[2]]
             let temp5_lo = _mm_unpacklo_pd(out4_hi, out5_hi);
             let temp5_hi = _mm_unpacklo_pd(out6_hi, out7_hi);
             let result5 = _mm256_castpd_ps(_mm256_set_m128d(temp5_hi, temp5_lo));
-
-            // result6: [out0[3], out1[3], out2[3], out3[3]]
-            let temp6_lo = _mm_unpackhi_pd(out0_hi, out1_hi);
-            let temp6_hi = _mm_unpackhi_pd(out2_hi, out3_hi);
-            let result6 = _mm256_castpd_ps(_mm256_set_m128d(temp6_hi, temp6_lo));
 
             // result7: [out4[3], out5[3], out6[3], out7[3]]
             let temp7_lo = _mm_unpackhi_pd(out4_hi, out5_hi);
             let temp7_hi = _mm_unpackhi_pd(out6_hi, out7_hi);
             let result7 = _mm256_castpd_ps(_mm256_set_m128d(temp7_hi, temp7_lo));
 
-            // Sequential stores.
-            let j = 8 * i;
-            let dst_ptr = dst.as_mut_ptr().add(j) as *mut f32;
-            _mm256_storeu_ps(dst_ptr, result0);
+            // Store second chunk.
             _mm256_storeu_ps(dst_ptr.add(8), result1);
-            _mm256_storeu_ps(dst_ptr.add(16), result2);
             _mm256_storeu_ps(dst_ptr.add(24), result3);
-            _mm256_storeu_ps(dst_ptr.add(32), result4);
             _mm256_storeu_ps(dst_ptr.add(40), result5);
-            _mm256_storeu_ps(dst_ptr.add(48), result6);
             _mm256_storeu_ps(dst_ptr.add(56), result7);
         }
     }
@@ -230,8 +236,8 @@ pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
 
 /// Performs a single radix-8 Stockham butterfly stage for p>1 (out-of-place, AVX+FMA).
 ///
-/// Generic version for p>1 cases. Uses direct SIMD stores, accepting non-sequential
-/// stores as the shuffle overhead isn't justified for larger strides.
+/// Generic version for p>1 cases. Uses chunked streaming to reduce register pressure
+/// while maintaining scattered stores for non-unit strides.
 #[target_feature(enable = "avx,fma")]
 pub(super) unsafe fn butterfly_radix8_generic_avx_fma(
     src: &[Complex32],
@@ -372,17 +378,14 @@ pub(super) unsafe fn butterfly_radix8_generic_avx_fma(
             let j2 = 8 * (i + 2) - 7 * k2;
             let j3 = 8 * (i + 3) - 7 * k3;
 
-            // Direct SIMD stores using 64-bit operations.
+            let dst_ptr = dst.as_mut_ptr() as *mut f64;
+
+            // First chunk: out0-3
             let out0_pd = _mm256_castps_pd(out0);
             let out1_pd = _mm256_castps_pd(out1);
             let out2_pd = _mm256_castps_pd(out2);
             let out3_pd = _mm256_castps_pd(out3);
-            let out4_pd = _mm256_castps_pd(out4);
-            let out5_pd = _mm256_castps_pd(out5);
-            let out6_pd = _mm256_castps_pd(out6);
-            let out7_pd = _mm256_castps_pd(out7);
 
-            // Extract 128-bit lanes.
             let out0_lo = _mm256_castpd256_pd128(out0_pd);
             let out0_hi = _mm256_extractf128_pd(out0_pd, 1);
             let out1_lo = _mm256_castpd256_pd128(out1_pd);
@@ -391,6 +394,33 @@ pub(super) unsafe fn butterfly_radix8_generic_avx_fma(
             let out2_hi = _mm256_extractf128_pd(out2_pd, 1);
             let out3_lo = _mm256_castpd256_pd128(out3_pd);
             let out3_hi = _mm256_extractf128_pd(out3_pd, 1);
+
+            _mm_storel_pd(dst_ptr.add(j0), out0_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride), out1_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 2), out2_lo);
+            _mm_storel_pd(dst_ptr.add(j0 + stride * 3), out3_lo);
+
+            _mm_storeh_pd(dst_ptr.add(j1), out0_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride), out1_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 2), out2_lo);
+            _mm_storeh_pd(dst_ptr.add(j1 + stride * 3), out3_lo);
+
+            _mm_storel_pd(dst_ptr.add(j2), out0_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride), out1_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 2), out2_hi);
+            _mm_storel_pd(dst_ptr.add(j2 + stride * 3), out3_hi);
+
+            _mm_storeh_pd(dst_ptr.add(j3), out0_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride), out1_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 2), out2_hi);
+            _mm_storeh_pd(dst_ptr.add(j3 + stride * 3), out3_hi);
+
+            // Second chunk: out4-7
+            let out4_pd = _mm256_castps_pd(out4);
+            let out5_pd = _mm256_castps_pd(out5);
+            let out6_pd = _mm256_castps_pd(out6);
+            let out7_pd = _mm256_castps_pd(out7);
+
             let out4_lo = _mm256_castpd256_pd128(out4_pd);
             let out4_hi = _mm256_extractf128_pd(out4_pd, 1);
             let out5_lo = _mm256_castpd256_pd128(out5_pd);
@@ -400,39 +430,21 @@ pub(super) unsafe fn butterfly_radix8_generic_avx_fma(
             let out7_lo = _mm256_castpd256_pd128(out7_pd);
             let out7_hi = _mm256_extractf128_pd(out7_pd, 1);
 
-            let dst_ptr = dst.as_mut_ptr() as *mut f64;
-
-            _mm_storel_pd(dst_ptr.add(j0), out0_lo);
-            _mm_storel_pd(dst_ptr.add(j0 + stride), out1_lo);
-            _mm_storel_pd(dst_ptr.add(j0 + stride * 2), out2_lo);
-            _mm_storel_pd(dst_ptr.add(j0 + stride * 3), out3_lo);
             _mm_storel_pd(dst_ptr.add(j0 + stride * 4), out4_lo);
             _mm_storel_pd(dst_ptr.add(j0 + stride * 5), out5_lo);
             _mm_storel_pd(dst_ptr.add(j0 + stride * 6), out6_lo);
             _mm_storel_pd(dst_ptr.add(j0 + stride * 7), out7_lo);
 
-            _mm_storeh_pd(dst_ptr.add(j1), out0_lo);
-            _mm_storeh_pd(dst_ptr.add(j1 + stride), out1_lo);
-            _mm_storeh_pd(dst_ptr.add(j1 + stride * 2), out2_lo);
-            _mm_storeh_pd(dst_ptr.add(j1 + stride * 3), out3_lo);
             _mm_storeh_pd(dst_ptr.add(j1 + stride * 4), out4_lo);
             _mm_storeh_pd(dst_ptr.add(j1 + stride * 5), out5_lo);
             _mm_storeh_pd(dst_ptr.add(j1 + stride * 6), out6_lo);
             _mm_storeh_pd(dst_ptr.add(j1 + stride * 7), out7_lo);
 
-            _mm_storel_pd(dst_ptr.add(j2), out0_hi);
-            _mm_storel_pd(dst_ptr.add(j2 + stride), out1_hi);
-            _mm_storel_pd(dst_ptr.add(j2 + stride * 2), out2_hi);
-            _mm_storel_pd(dst_ptr.add(j2 + stride * 3), out3_hi);
             _mm_storel_pd(dst_ptr.add(j2 + stride * 4), out4_hi);
             _mm_storel_pd(dst_ptr.add(j2 + stride * 5), out5_hi);
             _mm_storel_pd(dst_ptr.add(j2 + stride * 6), out6_hi);
             _mm_storel_pd(dst_ptr.add(j2 + stride * 7), out7_hi);
 
-            _mm_storeh_pd(dst_ptr.add(j3), out0_hi);
-            _mm_storeh_pd(dst_ptr.add(j3 + stride), out1_hi);
-            _mm_storeh_pd(dst_ptr.add(j3 + stride * 2), out2_hi);
-            _mm_storeh_pd(dst_ptr.add(j3 + stride * 3), out3_hi);
             _mm_storeh_pd(dst_ptr.add(j3 + stride * 4), out4_hi);
             _mm_storeh_pd(dst_ptr.add(j3 + stride * 5), out5_hi);
             _mm_storeh_pd(dst_ptr.add(j3 + stride * 6), out6_hi);
