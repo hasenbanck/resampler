@@ -147,40 +147,28 @@ pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
             let j = 8 * i;
             let dst_ptr = dst.as_mut_ptr().add(j) as *mut f32;
 
-            // First chunk: Interleave out0-3 and store.
+            // First chunk: Interleave out0-3 using 256-bit operations.
+            // Use 256-bit unpacks directly instead of costly 128-bit extract+insert operations.
             let out0_pd = _mm256_castps_pd(out0);
             let out1_pd = _mm256_castps_pd(out1);
             let out2_pd = _mm256_castps_pd(out2);
             let out3_pd = _mm256_castps_pd(out3);
 
-            let out0_lo = _mm256_castpd256_pd128(out0_pd);
-            let out0_hi = _mm256_extractf128_pd(out0_pd, 1);
-            let out1_lo = _mm256_castpd256_pd128(out1_pd);
-            let out1_hi = _mm256_extractf128_pd(out1_pd, 1);
-            let out2_lo = _mm256_castpd256_pd128(out2_pd);
-            let out2_hi = _mm256_extractf128_pd(out2_pd, 1);
-            let out3_lo = _mm256_castpd256_pd128(out3_pd);
-            let out3_hi = _mm256_extractf128_pd(out3_pd, 1);
+            // 256-bit unpack operations.
+            // unpacklo_pd(a,b) = [a[0],b[0],a[2],b[2]] on 4x 64-bit elements
+            // unpackhi_pd(a,b) = [a[1],b[1],a[3],b[3]] on 4x 64-bit elements
+            let temp_01_lo = _mm256_unpacklo_pd(out0_pd, out1_pd);
+            let temp_01_hi = _mm256_unpackhi_pd(out0_pd, out1_pd);
+            let temp_23_lo = _mm256_unpacklo_pd(out2_pd, out3_pd);
+            let temp_23_hi = _mm256_unpackhi_pd(out2_pd, out3_pd);
 
-            // result0: [out0[0], out1[0], out2[0], out3[0]]
-            let temp0_lo = _mm_unpacklo_pd(out0_lo, out1_lo);
-            let temp0_hi = _mm_unpacklo_pd(out2_lo, out3_lo);
-            let result0 = _mm256_castpd_ps(_mm256_set_m128d(temp0_hi, temp0_lo));
-
-            // result2: [out0[1], out1[1], out2[1], out3[1]]
-            let temp2_lo = _mm_unpackhi_pd(out0_lo, out1_lo);
-            let temp2_hi = _mm_unpackhi_pd(out2_lo, out3_lo);
-            let result2 = _mm256_castpd_ps(_mm256_set_m128d(temp2_hi, temp2_lo));
-
-            // result4: [out0[2], out1[2], out2[2], out3[2]]
-            let temp4_lo = _mm_unpacklo_pd(out0_hi, out1_hi);
-            let temp4_hi = _mm_unpacklo_pd(out2_hi, out3_hi);
-            let result4 = _mm256_castpd_ps(_mm256_set_m128d(temp4_hi, temp4_lo));
-
-            // result6: [out0[3], out1[3], out2[3], out3[3]]
-            let temp6_lo = _mm_unpackhi_pd(out0_hi, out1_hi);
-            let temp6_hi = _mm_unpackhi_pd(out2_hi, out3_hi);
-            let result6 = _mm256_castpd_ps(_mm256_set_m128d(temp6_hi, temp6_lo));
+            // Use permute2f128_pd to arrange 128-bit lanes to get sequential layout.
+            // permute2f128(a,b,0x20) = [lo128(a), lo128(b)]
+            // permute2f128(a,b,0x31) = [hi128(a), hi128(b)]
+            let result0 = _mm256_castpd_ps(_mm256_permute2f128_pd(temp_01_lo, temp_23_lo, 0x20));
+            let result2 = _mm256_castpd_ps(_mm256_permute2f128_pd(temp_01_hi, temp_23_hi, 0x20));
+            let result4 = _mm256_castpd_ps(_mm256_permute2f128_pd(temp_01_lo, temp_23_lo, 0x31));
+            let result6 = _mm256_castpd_ps(_mm256_permute2f128_pd(temp_01_hi, temp_23_hi, 0x31));
 
             // Store first chunk.
             _mm256_storeu_ps(dst_ptr, result0);
@@ -188,40 +176,23 @@ pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
             _mm256_storeu_ps(dst_ptr.add(32), result4);
             _mm256_storeu_ps(dst_ptr.add(48), result6);
 
-            // Second chunk: Interleave out4-7 and store.
+            // Second chunk: Interleave out4-7 using 256-bit operations.
             let out4_pd = _mm256_castps_pd(out4);
             let out5_pd = _mm256_castps_pd(out5);
             let out6_pd = _mm256_castps_pd(out6);
             let out7_pd = _mm256_castps_pd(out7);
 
-            let out4_lo = _mm256_castpd256_pd128(out4_pd);
-            let out4_hi = _mm256_extractf128_pd(out4_pd, 1);
-            let out5_lo = _mm256_castpd256_pd128(out5_pd);
-            let out5_hi = _mm256_extractf128_pd(out5_pd, 1);
-            let out6_lo = _mm256_castpd256_pd128(out6_pd);
-            let out6_hi = _mm256_extractf128_pd(out6_pd, 1);
-            let out7_lo = _mm256_castpd256_pd128(out7_pd);
-            let out7_hi = _mm256_extractf128_pd(out7_pd, 1);
+            // 256-bit unpack operations.
+            let temp_45_lo = _mm256_unpacklo_pd(out4_pd, out5_pd);
+            let temp_45_hi = _mm256_unpackhi_pd(out4_pd, out5_pd);
+            let temp_67_lo = _mm256_unpacklo_pd(out6_pd, out7_pd);
+            let temp_67_hi = _mm256_unpackhi_pd(out6_pd, out7_pd);
 
-            // result1: [out4[0], out5[0], out6[0], out7[0]]
-            let temp1_lo = _mm_unpacklo_pd(out4_lo, out5_lo);
-            let temp1_hi = _mm_unpacklo_pd(out6_lo, out7_lo);
-            let result1 = _mm256_castpd_ps(_mm256_set_m128d(temp1_hi, temp1_lo));
-
-            // result3: [out4[1], out5[1], out6[1], out7[1]]
-            let temp3_lo = _mm_unpackhi_pd(out4_lo, out5_lo);
-            let temp3_hi = _mm_unpackhi_pd(out6_lo, out7_lo);
-            let result3 = _mm256_castpd_ps(_mm256_set_m128d(temp3_hi, temp3_lo));
-
-            // result5: [out4[2], out5[2], out6[2], out7[2]]
-            let temp5_lo = _mm_unpacklo_pd(out4_hi, out5_hi);
-            let temp5_hi = _mm_unpacklo_pd(out6_hi, out7_hi);
-            let result5 = _mm256_castpd_ps(_mm256_set_m128d(temp5_hi, temp5_lo));
-
-            // result7: [out4[3], out5[3], out6[3], out7[3]]
-            let temp7_lo = _mm_unpackhi_pd(out4_hi, out5_hi);
-            let temp7_hi = _mm_unpackhi_pd(out6_hi, out7_hi);
-            let result7 = _mm256_castpd_ps(_mm256_set_m128d(temp7_hi, temp7_lo));
+            // Use permute2f128_pd to arrange 128-bit lanes.
+            let result1 = _mm256_castpd_ps(_mm256_permute2f128_pd(temp_45_lo, temp_67_lo, 0x20));
+            let result3 = _mm256_castpd_ps(_mm256_permute2f128_pd(temp_45_hi, temp_67_hi, 0x20));
+            let result5 = _mm256_castpd_ps(_mm256_permute2f128_pd(temp_45_lo, temp_67_lo, 0x31));
+            let result7 = _mm256_castpd_ps(_mm256_permute2f128_pd(temp_45_hi, temp_67_hi, 0x31));
 
             // Store second chunk.
             _mm256_storeu_ps(dst_ptr.add(8), result1);
