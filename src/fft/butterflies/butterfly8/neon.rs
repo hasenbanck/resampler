@@ -1,8 +1,10 @@
-use core::{arch::aarch64::*, f32::consts::FRAC_1_SQRT_2};
+use core::arch::aarch64::*;
 
 use crate::fft::{
     Complex32,
-    butterflies::ops::{complex_mul, complex_mul_i, load_neg_imag_mask},
+    butterflies::ops::{
+        complex_mul, complex_mul_i, load_neg_imag_mask, load_scale_neon, v8x_neon, w8x_neon,
+    },
 };
 
 /// Performs a single radix-8 Stockham butterfly stage for stride=1 (out-of-place, NEON).
@@ -21,18 +23,7 @@ pub(super) unsafe fn butterfly_radix8_stride1_neon(
 
     unsafe {
         let neg_imag_mask = load_neg_imag_mask();
-
-        let w8_1 = vreinterpretq_f32_u32(vld1q_u32(
-            [
-                FRAC_1_SQRT_2.to_bits(),
-                (-FRAC_1_SQRT_2).to_bits(),
-                FRAC_1_SQRT_2.to_bits(),
-                (-FRAC_1_SQRT_2).to_bits(),
-            ]
-            .as_ptr(),
-        ));
-
-        let w8_3 = vdupq_n_f32(-FRAC_1_SQRT_2);
+        let scale = load_scale_neon();
 
         for i in (0..simd_iters).step_by(2) {
             // Load 2 complex numbers from each eighth.
@@ -101,7 +92,7 @@ pub(super) unsafe fn butterfly_radix8_stride1_neon(
 
             // out[1] = x_even[1] + W_8^1 * x_odd[1]
             // out[5] = x_even[1] - W_8^1 * x_odd[1]
-            let w8_1_odd_1 = complex_mul(w8_1, x_odd_1);
+            let w8_1_odd_1 = w8x_neon(x_odd_1, neg_imag_mask, scale);
             let out1 = vaddq_f32(x_even_1, w8_1_odd_1);
             let out5 = vsubq_f32(x_even_1, w8_1_odd_1);
 
@@ -114,7 +105,7 @@ pub(super) unsafe fn butterfly_radix8_stride1_neon(
 
             // out[3] = x_even[3] + W_8^3 * x_odd[3]
             // out[7] = x_even[3] - W_8^3 * x_odd[3]
-            let w8_3_odd_3 = complex_mul(w8_3, x_odd_3);
+            let w8_3_odd_3 = v8x_neon(x_odd_3, neg_imag_mask, scale);
             let out3 = vaddq_f32(x_even_3, w8_3_odd_3);
             let out7 = vsubq_f32(x_even_3, w8_3_odd_3);
 
@@ -189,18 +180,7 @@ pub(super) unsafe fn butterfly_radix8_generic_neon(
 
     unsafe {
         let neg_imag_mask = load_neg_imag_mask();
-
-        let w8_1 = vreinterpretq_f32_u32(vld1q_u32(
-            [
-                FRAC_1_SQRT_2.to_bits(),
-                (-FRAC_1_SQRT_2).to_bits(),
-                FRAC_1_SQRT_2.to_bits(),
-                (-FRAC_1_SQRT_2).to_bits(),
-            ]
-            .as_ptr(),
-        ));
-
-        let w8_3 = vdupq_n_f32(-FRAC_1_SQRT_2);
+        let scale = load_scale_neon();
 
         for i in (0..simd_iters).step_by(2) {
             let k = i % stride;
@@ -279,7 +259,7 @@ pub(super) unsafe fn butterfly_radix8_generic_neon(
             let out0 = vaddq_f32(x_even_0, x_odd_0);
             let out4 = vsubq_f32(x_even_0, x_odd_0);
 
-            let w8_1_odd_1 = complex_mul(w8_1, x_odd_1);
+            let w8_1_odd_1 = w8x_neon(x_odd_1, neg_imag_mask, scale);
             let out1 = vaddq_f32(x_even_1, w8_1_odd_1);
             let out5 = vsubq_f32(x_even_1, w8_1_odd_1);
 
@@ -287,7 +267,7 @@ pub(super) unsafe fn butterfly_radix8_generic_neon(
             let out2 = vaddq_f32(x_even_2, w8_2_odd_2);
             let out6 = vsubq_f32(x_even_2, w8_2_odd_2);
 
-            let w8_3_odd_3 = complex_mul(w8_3, x_odd_3);
+            let w8_3_odd_3 = v8x_neon(x_odd_3, neg_imag_mask, scale);
             let out3 = vaddq_f32(x_even_3, w8_3_odd_3);
             let out7 = vsubq_f32(x_even_3, w8_3_odd_3);
 

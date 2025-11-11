@@ -1,8 +1,11 @@
-use core::{arch::x86_64::*, f32::consts::FRAC_1_SQRT_2};
+use core::arch::x86_64::*;
 
 use crate::fft::{
     Complex32,
-    butterflies::ops::{complex_mul_i_sse4_2, complex_mul_sse4_2, load_neg_imag_mask_sse4_2},
+    butterflies::ops::{
+        complex_mul_i_sse4_2, complex_mul_sse4_2, load_neg_imag_mask_sse4_2, load_scale_sse4_2,
+        v8x_sse4_2, w8x_sse4_2,
+    },
 };
 
 /// Performs a single radix-8 Stockham butterfly stage for stride=1 (out-of-place, SSE4.2).
@@ -21,14 +24,7 @@ pub(super) unsafe fn butterfly_radix8_stride1_sse4_2(
 
     unsafe {
         let neg_imag_mask = load_neg_imag_mask_sse4_2();
-
-        let w8_1 = _mm_setr_ps(FRAC_1_SQRT_2, -FRAC_1_SQRT_2, FRAC_1_SQRT_2, -FRAC_1_SQRT_2);
-        let w8_3 = _mm_setr_ps(
-            -FRAC_1_SQRT_2,
-            -FRAC_1_SQRT_2,
-            -FRAC_1_SQRT_2,
-            -FRAC_1_SQRT_2,
-        );
+        let scale = load_scale_sse4_2();
 
         for i in (0..simd_iters).step_by(2) {
             // Load 2 complex numbers from each eighth.
@@ -99,7 +95,7 @@ pub(super) unsafe fn butterfly_radix8_stride1_sse4_2(
             // out[5] = x_even[1] - W_8^1 * x_odd[1]
             // W_8^1 * (a+bi) = ((a+b)/√2, (b-a)/√2)
             // Using SIMD: W_8^1 = [1/√2, -1/√2, 1/√2, -1/√2]
-            let w8_1_odd_1 = complex_mul_sse4_2(w8_1, x_odd_1);
+            let w8_1_odd_1 = w8x_sse4_2(x_odd_1, neg_imag_mask, scale);
             let out1 = _mm_add_ps(x_even_1, w8_1_odd_1);
             let out5 = _mm_sub_ps(x_even_1, w8_1_odd_1);
 
@@ -113,7 +109,7 @@ pub(super) unsafe fn butterfly_radix8_stride1_sse4_2(
             // out[3] = x_even[3] + W_8^3 * x_odd[3]
             // out[7] = x_even[3] - W_8^3 * x_odd[3]
             // W_8^3 = (-1-i)/√2 = [-1/√2, -1/√2, -1/√2, -1/√2]
-            let w8_3_odd_3 = complex_mul_sse4_2(w8_3, x_odd_3);
+            let w8_3_odd_3 = v8x_sse4_2(x_odd_3, neg_imag_mask, scale);
             let out3 = _mm_add_ps(x_even_3, w8_3_odd_3);
             let out7 = _mm_sub_ps(x_even_3, w8_3_odd_3);
 
@@ -179,14 +175,7 @@ pub(super) unsafe fn butterfly_radix8_generic_sse4_2(
 
     unsafe {
         let neg_imag_mask = load_neg_imag_mask_sse4_2();
-
-        let w8_1 = _mm_setr_ps(FRAC_1_SQRT_2, -FRAC_1_SQRT_2, FRAC_1_SQRT_2, -FRAC_1_SQRT_2);
-        let w8_3 = _mm_setr_ps(
-            -FRAC_1_SQRT_2,
-            -FRAC_1_SQRT_2,
-            -FRAC_1_SQRT_2,
-            -FRAC_1_SQRT_2,
-        );
+        let scale = load_scale_sse4_2();
 
         for i in (0..simd_iters).step_by(2) {
             let k = i % stride;
@@ -265,7 +254,7 @@ pub(super) unsafe fn butterfly_radix8_generic_sse4_2(
             let out0 = _mm_add_ps(x_even_0, x_odd_0);
             let out4 = _mm_sub_ps(x_even_0, x_odd_0);
 
-            let w8_1_odd_1 = complex_mul_sse4_2(w8_1, x_odd_1);
+            let w8_1_odd_1 = w8x_sse4_2(x_odd_1, neg_imag_mask, scale);
             let out1 = _mm_add_ps(x_even_1, w8_1_odd_1);
             let out5 = _mm_sub_ps(x_even_1, w8_1_odd_1);
 
@@ -273,7 +262,7 @@ pub(super) unsafe fn butterfly_radix8_generic_sse4_2(
             let out2 = _mm_add_ps(x_even_2, w8_2_odd_2);
             let out6 = _mm_sub_ps(x_even_2, w8_2_odd_2);
 
-            let w8_3_odd_3 = complex_mul_sse4_2(w8_3, x_odd_3);
+            let w8_3_odd_3 = v8x_sse4_2(x_odd_3, neg_imag_mask, scale);
             let out3 = _mm_add_ps(x_even_3, w8_3_odd_3);
             let out7 = _mm_sub_ps(x_even_3, w8_3_odd_3);
 
