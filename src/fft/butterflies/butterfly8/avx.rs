@@ -50,24 +50,14 @@ pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
             let z7_ptr = src.as_ptr().add(i + eighth_samples * 7) as *const f32;
             let z7 = _mm256_loadu_ps(z7_ptr);
 
-            // Load prepackaged twiddles in packed format (7 twiddles per group of 4 lanes).
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 7) as *const f32;
-            let w1 = _mm256_loadu_ps(tw_ptr); // w1[i..i+4]
-            let w2 = _mm256_loadu_ps(tw_ptr.add(8)); // w2[i..i+4]
-            let w3 = _mm256_loadu_ps(tw_ptr.add(16)); // w3[i..i+4]
-            let w4 = _mm256_loadu_ps(tw_ptr.add(24)); // w4[i..i+4]
-            let w5 = _mm256_loadu_ps(tw_ptr.add(32)); // w5[i..i+4]
-            let w6 = _mm256_loadu_ps(tw_ptr.add(40)); // w6[i..i+4]
-            let w7 = _mm256_loadu_ps(tw_ptr.add(48)); // w7[i..i+4]
-
-            // Apply twiddle factors: t1-t7 = w1-w7 * z1-z7
-            let t1 = complex_mul_avx(w1, z1);
-            let t2 = complex_mul_avx(w2, z2);
-            let t3 = complex_mul_avx(w3, z3);
-            let t4 = complex_mul_avx(w4, z4);
-            let t5 = complex_mul_avx(w5, z5);
-            let t6 = complex_mul_avx(w6, z6);
-            let t7 = complex_mul_avx(w7, z7);
+            // Stride=1 optimization: all twiddles are identity (1+0i), skip multiplication.
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
+            let t5 = z5;
+            let t6 = z6;
+            let t7 = z7;
 
             // Split-radix decomposition: compute even radix-4 on (z0, t2, t4, t6)
             let even_a0 = _mm256_add_ps(z0, t4);

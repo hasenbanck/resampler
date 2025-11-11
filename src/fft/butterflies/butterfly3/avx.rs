@@ -34,14 +34,9 @@ pub(super) unsafe fn butterfly_radix3_stride1_avx_fma(
             let z2_ptr = src.as_ptr().add(i + third_samples * 2) as *const f32;
             let z2 = _mm256_loadu_ps(z2_ptr);
 
-            // Load prepackaged twiddles directly (no shuffle needed).
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 2) as *const f32;
-            let w1 = _mm256_loadu_ps(tw_ptr); // w1[i..i+4]
-            let w2 = _mm256_loadu_ps(tw_ptr.add(8)); // w2[i..i+4]
-
-            // Complex multiply: t1 = w1 * z1, t2 = w2 * z2
-            let t1 = complex_mul_avx(w1, z1);
-            let t2 = complex_mul_avx(w2, z2);
+            // Identity twiddles: t1 = (1+0i) * z1 = z1, t2 = (1+0i) * z2 = z2 (skip twiddle load and multiply)
+            let t1 = z1;
+            let t2 = z2;
 
             // sum_t = t1 + t2, diff_t = t1 - t2
             let sum_t = _mm256_add_ps(t1, t2);

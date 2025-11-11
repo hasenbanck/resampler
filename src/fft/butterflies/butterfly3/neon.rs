@@ -38,13 +38,9 @@ pub(super) unsafe fn butterfly_radix3_stride1_neon(
             let z2_ptr = src.as_ptr().add(i + third_samples * 2) as *const f32;
             let z2 = vld1q_f32(z2_ptr);
 
-            // Load pre-packaged twiddles: [w1[i..i+2], w2[i..i+2]]
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 2) as *const f32;
-            let w1 = vld1q_f32(tw_ptr); // w1[i], w1[i+1]
-            let w2 = vld1q_f32(tw_ptr.add(4)); // w2[i], w2[i+1]
-
-            let t1 = complex_mul(z1, w1);
-            let t2 = complex_mul(z2, w2);
+            // Identity twiddles: t1 = (1+0i) * z1 = z1, t2 = (1+0i) * z2 = z2 (skip twiddle load and multiply)
+            let t1 = z1;
+            let t2 = z2;
 
             // Radix-3 DFT.
             // sum_t = t1 + t2, diff_t = t1 - t2

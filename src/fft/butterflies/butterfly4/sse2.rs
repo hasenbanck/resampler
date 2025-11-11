@@ -35,16 +35,10 @@ pub(super) unsafe fn butterfly_radix4_stride1_sse2(
             let z3_ptr = src.as_ptr().add(i + quarter_samples * 3) as *const f32;
             let z3 = _mm_loadu_ps(z3_ptr);
 
-            // Load prepackaged twiddles directly (no shuffle needed).
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 3) as *const f32;
-            let w1 = _mm_loadu_ps(tw_ptr); // w1[i], w1[i+1]
-            let w2 = _mm_loadu_ps(tw_ptr.add(4)); // w2[i], w2[i+1]
-            let w3 = _mm_loadu_ps(tw_ptr.add(8)); // w3[i], w3[i+1]
-
-            // Complex multiply: t1 = w1 * z1, t2 = w2 * z2, t3 = w3 * z3
-            let t1 = complex_mul_sse2(w1, z1);
-            let t2 = complex_mul_sse2(w2, z2);
-            let t3 = complex_mul_sse2(w3, z3);
+            // Identity twiddles: t1 = (1+0i) * z1 = z1, t2 = z2, t3 = z3 (skip twiddle load and multiply)
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
 
             // Radix-4 butterfly
             let a0 = _mm_add_ps(z0, t2);

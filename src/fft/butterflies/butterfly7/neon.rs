@@ -59,21 +59,13 @@ pub(super) unsafe fn butterfly_radix7_stride1_neon(
             let z6_ptr = src.as_ptr().add(i + seventh_samples * 6) as *const f32;
             let z6 = vld1q_f32(z6_ptr);
 
-            // Load pre-packaged twiddles: [w1[i..i+2], w2[i..i+2], ..., w6[i..i+2]]
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 6) as *const f32;
-            let w1 = vld1q_f32(tw_ptr); // w1[i], w1[i+1]
-            let w2 = vld1q_f32(tw_ptr.add(4)); // w2[i], w2[i+1]
-            let w3 = vld1q_f32(tw_ptr.add(8)); // w3[i], w3[i+1]
-            let w4 = vld1q_f32(tw_ptr.add(12)); // w4[i], w4[i+1]
-            let w5 = vld1q_f32(tw_ptr.add(16)); // w5[i], w5[i+1]
-            let w6 = vld1q_f32(tw_ptr.add(20)); // w6[i], w6[i+1]
-
-            let t1 = complex_mul(w1, z1);
-            let t2 = complex_mul(w2, z2);
-            let t3 = complex_mul(w3, z3);
-            let t4 = complex_mul(w4, z4);
-            let t5 = complex_mul(w5, z5);
-            let t6 = complex_mul(w6, z6);
+            // Identity twiddles: t_k = (1+0i) * z_k = z_k (skip twiddle load and multiply)
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
+            let t5 = z5;
+            let t6 = z6;
 
             // Interleave sum and difference computations to reduce dependency chains.
             // Compute a1, a2, a3 (sums) in parallel with dependency preparation.

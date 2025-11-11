@@ -347,11 +347,7 @@ impl FftResampler {
     fn resample(&mut self, wave_input: &[f32], wave_output: &mut [f32], overlap: &mut [f32]) {
         // Copy input and clear padding.
         self.input_buffer[..self.fft_size_input].copy_from_slice(wave_input);
-        self.input_buffer
-            .iter_mut()
-            .skip(self.fft_size_input)
-            .take(self.fft_size_input)
-            .for_each(|x| *x = 0.0);
+        self.input_buffer[self.fft_size_input..].fill(0.0);
 
         self.fft.process(
             &self.input_buffer,
@@ -371,9 +367,7 @@ impl FftResampler {
             .for_each(|(spectrum, filter)| *spectrum = spectrum.mul(filter));
 
         self.output_spectrum[0..new_length].copy_from_slice(&self.input_spectrum[0..new_length]);
-        self.output_spectrum[new_length..].iter_mut().for_each(|x| {
-            *x = Complex32::zero();
-        });
+        self.output_spectrum[new_length..].fill(Complex32::zero());
 
         self.ifft.process(
             &self.output_spectrum,

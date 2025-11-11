@@ -47,18 +47,12 @@ pub(super) unsafe fn butterfly_radix5_stride1_neon(
             let z4_ptr = src.as_ptr().add(i + fifth_samples * 4) as *const f32;
             let z4 = vld1q_f32(z4_ptr);
 
-            // Load pre-packaged twiddles: [w1[i..i+2], w2[i..i+2], w3[i..i+2], w4[i..i+2]]
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 4) as *const f32;
-            let w1 = vld1q_f32(tw_ptr); // w1[i], w1[i+1]
-            let w2 = vld1q_f32(tw_ptr.add(4)); // w2[i], w2[i+1]
-            let w3 = vld1q_f32(tw_ptr.add(8)); // w3[i], w3[i+1]
-            let w4 = vld1q_f32(tw_ptr.add(12)); // w4[i], w4[i+1]
-
-            // Complex multiply using optimized helper function.
-            let t1 = complex_mul(z1, w1);
-            let t2 = complex_mul(z2, w2);
-            let t3 = complex_mul(z3, w3);
-            let t4 = complex_mul(z4, w4);
+            // Stride=1 optimization: Skip twiddle loads and multiplications (identity twiddles).
+            // t_k = (1+0i) * z_k = z_k
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
 
             // Radix-5 DFT.
             let sum_all = vaddq_f32(vaddq_f32(vaddq_f32(t1, t2), t3), t4);

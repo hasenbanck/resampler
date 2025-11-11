@@ -240,6 +240,19 @@ pub(super) fn butterfly_radix2_scalar<const WIDTH: usize>(
     let samples = src.len();
     let half_samples = samples >> 1;
 
+    // Stride=1 optimization: skip identity twiddle multiplications.
+    if stride == 1 {
+        for i in start_index..half_samples {
+            let a = src[i];
+            let b = src[i + half_samples];
+
+            let j = i << 1;
+            dst[j] = a.add(&b);
+            dst[j + 1] = a.sub(&b);
+        }
+        return;
+    }
+
     // For radix-2 with only 1 twiddle per iteration, the layout is the same
     // regardless of width, so we can use simple indexing
     for i in start_index..half_samples {

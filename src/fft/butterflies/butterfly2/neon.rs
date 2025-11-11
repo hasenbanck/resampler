@@ -28,15 +28,11 @@ pub(super) unsafe fn butterfly_radix2_stride1_neon(
             let b_ptr = src.as_ptr().add(i + half_samples) as *const f32;
             let b = vld1q_f32(b_ptr);
 
-            // Load twiddles contiguously.
-            let tw_ptr = stage_twiddles.as_ptr().add(i) as *const f32;
-            let tw = vld1q_f32(tw_ptr);
+            // Identity twiddles: t = (1+0i) * b = b (skip twiddle load and multiply)
 
-            let t = complex_mul(b, tw);
-
-            // Butterfly: out_top = a + t, out_bot = a - t
-            let out_top = vaddq_f32(a, t); // Results for even indices
-            let out_bot = vsubq_f32(a, t); // Results for odd indices
+            // Butterfly: out_top = a + b, out_bot = a - b
+            let out_top = vaddq_f32(a, b); // Results for even indices
+            let out_bot = vsubq_f32(a, b); // Results for odd indices
 
             // Apply zip pattern for sequential stores.
             // Cast to f64 view to treat each complex number as a single 64-bit unit.

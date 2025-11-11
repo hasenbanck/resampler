@@ -37,15 +37,10 @@ pub(super) unsafe fn butterfly_radix4_stride1_neon(
             let z3_ptr = src.as_ptr().add(i + quarter_samples * 3) as *const f32;
             let z3 = vld1q_f32(z3_ptr);
 
-            // Load pre-packaged twiddles: [w1[i..i+2], w2[i..i+2], w3[i..i+2]]
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 3) as *const f32;
-            let w1 = vld1q_f32(tw_ptr); // w1[i], w1[i+1]
-            let w2 = vld1q_f32(tw_ptr.add(4)); // w2[i], w2[i+1]
-            let w3 = vld1q_f32(tw_ptr.add(8)); // w3[i], w3[i+1]
-
-            let t1 = complex_mul(z1, w1);
-            let t2 = complex_mul(z2, w2);
-            let t3 = complex_mul(z3, w3);
+            // Identity twiddles: t1 = (1+0i) * z1 = z1, t2 = z2, t3 = z3 (skip twiddle load and multiply)
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
 
             // Radix-4 butterfly.
             let a0 = vaddq_f32(z0, t2);

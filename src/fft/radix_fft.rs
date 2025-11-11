@@ -278,12 +278,20 @@ impl<D> RadixFFT<D> {
         let mut stage_size = 1;
         let mut stride = 1;
 
-        for &radix in factors {
+        for (stage_index, &radix) in factors.iter().enumerate() {
             let r = radix.radix();
             let num_twiddles_per_iter = r - 1;
             stage_size *= r;
             let num_columns = stage_size / r;
             debug_assert_eq!(num_columns, stride);
+
+            // Skip generating twiddles for the first stage (stride=1) since all twiddles
+            // are identity values (1+0i) and the butterfly implementations handle this
+            // case without twiddle multiplication.
+            if stage_index == 0 {
+                stride = stage_size;
+                continue;
+            }
 
             let iterations = n / r;
 

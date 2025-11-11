@@ -27,16 +27,11 @@ pub(super) unsafe fn butterfly_radix2_stride1_sse4_2(
             let b_ptr = src.as_ptr().add(i + half_samples) as *const f32;
             let b = _mm_loadu_ps(b_ptr);
 
-            // Load twiddles contiguously.
-            let tw_ptr = stage_twiddles.as_ptr().add(i) as *const f32;
-            let tw = _mm_loadu_ps(tw_ptr);
+            // Identity twiddles: t = (1+0i) * b = b (skip twiddle load and multiply)
 
-            // Complex multiply: t = tw * b
-            let t = complex_mul_sse4_2(tw, b);
-
-            // Butterfly: out_top = a + t, out_bot = a - t
-            let out_top = _mm_add_ps(a, t);
-            let out_bot = _mm_sub_ps(a, t);
+            // Butterfly: out_top = a + b, out_bot = a - b
+            let out_top = _mm_add_ps(a, b);
+            let out_bot = _mm_sub_ps(a, b);
 
             // Apply unpack-permute pattern for sequential stores.
             let out_top_pd = _mm_castps_pd(out_top);
