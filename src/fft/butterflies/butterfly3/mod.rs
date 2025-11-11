@@ -239,6 +239,53 @@ fn butterfly_radix3_scalar<const WIDTH: usize>(
     let third_samples = samples / 3;
     let simd_iters = (third_samples / WIDTH) * WIDTH;
 
+    // Stride=1 optimization: skip identity twiddle multiplications.
+    if stride == 1 {
+        for i in start_index..simd_iters {
+            let z0 = src[i];
+            let z1 = src[i + third_samples];
+            let z2 = src[i + third_samples * 2];
+
+            // Identity twiddles: t1 = (1+0i) * z1 = z1, t2 = (1+0i) * z2 = z2
+            let sum_t = z1.add(&z2);
+            let diff_t = z1.sub(&z2);
+
+            let j = 3 * i;
+            dst[j] = z0.add(&sum_t);
+
+            let re_part = z0.re - 0.5 * sum_t.re;
+            let im_part = z0.im - 0.5 * sum_t.im;
+            let sqrt3_diff_re = SQRT3_2 * diff_t.im;
+            let sqrt3_diff_im = -SQRT3_2 * diff_t.re;
+
+            dst[j + 1] = Complex32::new(re_part + sqrt3_diff_re, im_part + sqrt3_diff_im);
+            dst[j + 2] = Complex32::new(re_part - sqrt3_diff_re, im_part - sqrt3_diff_im);
+        }
+
+        // Process scalar tail.
+        for i in simd_iters..third_samples {
+            let z0 = src[i];
+            let z1 = src[i + third_samples];
+            let z2 = src[i + third_samples * 2];
+
+            // Identity twiddles: t1 = z1, t2 = z2
+            let sum_t = z1.add(&z2);
+            let diff_t = z1.sub(&z2);
+
+            let j = 3 * i;
+            dst[j] = z0.add(&sum_t);
+
+            let re_part = z0.re - 0.5 * sum_t.re;
+            let im_part = z0.im - 0.5 * sum_t.im;
+            let sqrt3_diff_re = SQRT3_2 * diff_t.im;
+            let sqrt3_diff_im = -SQRT3_2 * diff_t.re;
+
+            dst[j + 1] = Complex32::new(re_part + sqrt3_diff_re, im_part + sqrt3_diff_im);
+            dst[j + 2] = Complex32::new(re_part - sqrt3_diff_re, im_part - sqrt3_diff_im);
+        }
+        return;
+    }
+
     // Process SIMD-packed region.
     for i in start_index..simd_iters {
         let k = i % stride;

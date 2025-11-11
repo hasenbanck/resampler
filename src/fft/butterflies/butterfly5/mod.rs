@@ -242,6 +242,93 @@ fn butterfly_radix5_scalar<const WIDTH: usize>(
     let fifth_samples = samples / 5;
     let simd_iters = (fifth_samples / WIDTH) * WIDTH;
 
+    // Stride=1 optimization: skip identity twiddle multiplications.
+    if stride == 1 {
+        for i in start_index..simd_iters {
+            let z0 = src[i];
+            let z1 = src[i + fifth_samples];
+            let z2 = src[i + fifth_samples * 2];
+            let z3 = src[i + fifth_samples * 3];
+            let z4 = src[i + fifth_samples * 4];
+
+            // Identity twiddles: t_k = (1+0i) * z_k = z_k
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
+
+            // Radix-5 DFT using the standard decomposition.
+            let sum_all = t1.add(&t2).add(&t3).add(&t4);
+
+            let a1 = t1.add(&t4);
+            let a2 = t2.add(&t3);
+            let b1_re = t1.im - t4.im;
+            let b1_im = t4.re - t1.re;
+            let b2_re = t2.im - t3.im;
+            let b2_im = t3.re - t2.re;
+
+            let c1_re = z0.re + COS_2PI_5 * a1.re + COS_4PI_5 * a2.re;
+            let c1_im = z0.im + COS_2PI_5 * a1.im + COS_4PI_5 * a2.im;
+            let c2_re = z0.re + COS_4PI_5 * a1.re + COS_2PI_5 * a2.re;
+            let c2_im = z0.im + COS_4PI_5 * a1.im + COS_2PI_5 * a2.im;
+
+            let d1_re = SIN_2PI_5 * b1_re + SIN_4PI_5 * b2_re;
+            let d1_im = SIN_2PI_5 * b1_im + SIN_4PI_5 * b2_im;
+            let d2_re = SIN_4PI_5 * b1_re - SIN_2PI_5 * b2_re;
+            let d2_im = SIN_4PI_5 * b1_im - SIN_2PI_5 * b2_im;
+
+            let j = 5 * i;
+            dst[j] = z0.add(&sum_all);
+            dst[j + 1] = Complex32::new(c1_re + d1_re, c1_im + d1_im);
+            dst[j + 2] = Complex32::new(c2_re + d2_re, c2_im + d2_im);
+            dst[j + 3] = Complex32::new(c2_re - d2_re, c2_im - d2_im);
+            dst[j + 4] = Complex32::new(c1_re - d1_re, c1_im - d1_im);
+        }
+
+        // Process scalar tail.
+        for i in simd_iters..fifth_samples {
+            let z0 = src[i];
+            let z1 = src[i + fifth_samples];
+            let z2 = src[i + fifth_samples * 2];
+            let z3 = src[i + fifth_samples * 3];
+            let z4 = src[i + fifth_samples * 4];
+
+            // Identity twiddles: t_k = (1+0i) * z_k = z_k
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
+
+            // Radix-5 DFT using the standard decomposition.
+            let sum_all = t1.add(&t2).add(&t3).add(&t4);
+
+            let a1 = t1.add(&t4);
+            let a2 = t2.add(&t3);
+            let b1_re = t1.im - t4.im;
+            let b1_im = t4.re - t1.re;
+            let b2_re = t2.im - t3.im;
+            let b2_im = t3.re - t2.re;
+
+            let c1_re = z0.re + COS_2PI_5 * a1.re + COS_4PI_5 * a2.re;
+            let c1_im = z0.im + COS_2PI_5 * a1.im + COS_4PI_5 * a2.im;
+            let c2_re = z0.re + COS_4PI_5 * a1.re + COS_2PI_5 * a2.re;
+            let c2_im = z0.im + COS_4PI_5 * a1.im + COS_2PI_5 * a2.im;
+
+            let d1_re = SIN_2PI_5 * b1_re + SIN_4PI_5 * b2_re;
+            let d1_im = SIN_2PI_5 * b1_im + SIN_4PI_5 * b2_im;
+            let d2_re = SIN_4PI_5 * b1_re - SIN_2PI_5 * b2_re;
+            let d2_im = SIN_4PI_5 * b1_im - SIN_2PI_5 * b2_im;
+
+            let j = 5 * i;
+            dst[j] = z0.add(&sum_all);
+            dst[j + 1] = Complex32::new(c1_re + d1_re, c1_im + d1_im);
+            dst[j + 4] = Complex32::new(c1_re - d1_re, c1_im - d1_im);
+            dst[j + 2] = Complex32::new(c2_re + d2_re, c2_im + d2_im);
+            dst[j + 3] = Complex32::new(c2_re - d2_re, c2_im - d2_im);
+        }
+        return;
+    }
+
     // Process SIMD-packed region.
     for i in start_index..simd_iters {
         let k = i % stride;

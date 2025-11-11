@@ -62,13 +62,15 @@ macro_rules! define_stockham_autosort {
             for factor in factors {
                 let radix = factor.radix();
                 let num_twiddles_per_column = radix - 1;
-
                 let iterations = n / radix;
-                let stage_twiddle_count = iterations * num_twiddles_per_column;
+                // The first stage doesn't use twiddles.
+                let stage_twiddle_count =
+                    (iterations * num_twiddles_per_column) * (stride != 1) as usize;
+
                 let stage_twiddles =
                     &twiddles[twiddle_offset..twiddle_offset + stage_twiddle_count];
 
-                // Use SIMD-specific butterfly functions with stride-based dispatch
+                // Use SIMD-specific butterfly functions with stride-based dispatch.
                 match (factor, stride) {
                     (Radix::Factor2, 1) => $butterfly_2_p1(input, output, stage_twiddles),
                     (Radix::Factor2, _) => $butterfly_2_gen(input, output, stage_twiddles, stride),
@@ -214,10 +216,10 @@ pub(crate) fn stockham_autosort(
     for factor in factors {
         let radix = factor.radix();
         let num_twiddles_per_column = radix - 1;
-
-        // With replicated twiddles: we have (n/r) iterations × (r-1) twiddles per iteration.
         let iterations = n / radix;
-        let stage_twiddle_count = iterations * num_twiddles_per_column;
+        // The first stage doesn't use twiddles.
+        let stage_twiddle_count = (iterations * num_twiddles_per_column) * (stride != 1) as usize;
+
         let stage_twiddles = &twiddles[twiddle_offset..twiddle_offset + stage_twiddle_count];
 
         // Process entire array at once (Stockham's key property).

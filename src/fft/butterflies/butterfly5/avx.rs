@@ -41,18 +41,12 @@ pub(super) unsafe fn butterfly_radix5_stride1_avx_fma(
             let z4_ptr = src.as_ptr().add(i + fifth_samples * 4) as *const f32;
             let z4 = _mm256_loadu_ps(z4_ptr);
 
-            // Load prepackaged twiddles directly (no shuffle needed).
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 4) as *const f32;
-            let w1 = _mm256_loadu_ps(tw_ptr); // w1[i..i+4]
-            let w2 = _mm256_loadu_ps(tw_ptr.add(8)); // w2[i..i+4]
-            let w3 = _mm256_loadu_ps(tw_ptr.add(16)); // w3[i..i+4]
-            let w4 = _mm256_loadu_ps(tw_ptr.add(24)); // w4[i..i+4]
-
-            // Complex multiply: t1 = w1 * z1, t2 = w2 * z2, t3 = w3 * z3, t4 = w4 * z4
-            let t1 = complex_mul_avx(w1, z1);
-            let t2 = complex_mul_avx(w2, z2);
-            let t3 = complex_mul_avx(w3, z3);
-            let t4 = complex_mul_avx(w4, z4);
+            // Stride=1 optimization: Skip twiddle loads and multiplications (identity twiddles).
+            // t_k = (1+0i) * z_k = z_k
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
 
             // Radix-5 DFT.
             let sum_all = _mm256_add_ps(_mm256_add_ps(_mm256_add_ps(t1, t2), t3), t4);

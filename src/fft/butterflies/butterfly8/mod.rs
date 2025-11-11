@@ -247,6 +247,156 @@ pub(super) fn butterfly_radix8_scalar<const WIDTH: usize>(
     let eighth_samples = samples >> 3;
     let simd_iters = (eighth_samples / WIDTH) * WIDTH;
 
+    // Stride=1 optimization: skip identity twiddle multiplications.
+    if stride == 1 {
+        // Process iterations with identity twiddles (no multiplication needed).
+        for i in start_index..simd_iters {
+            // Load 8 input values.
+            let z0 = src[i];
+            let z1 = src[i + eighth_samples];
+            let z2 = src[i + eighth_samples * 2];
+            let z3 = src[i + eighth_samples * 3];
+            let z4 = src[i + eighth_samples * 4];
+            let z5 = src[i + eighth_samples * 5];
+            let z6 = src[i + eighth_samples * 6];
+            let z7 = src[i + eighth_samples * 7];
+
+            // Identity twiddles: t_k = (1+0i) * z_k = z_k
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
+            let t5 = z5;
+            let t6 = z6;
+            let t7 = z7;
+
+            // Split-radix decomposition:
+            // First, compute radix-4 DFT on even indices (z0, t2, t4, t6)
+            let even_a0 = z0.add(&t4);
+            let even_a1 = z0.sub(&t4);
+            let even_a2 = t2.add(&t6);
+            let even_a3_re = t2.im - t6.im;
+            let even_a3_im = t6.re - t2.re;
+
+            let x_even_0 = even_a0.add(&even_a2);
+            let x_even_2 = even_a0.sub(&even_a2);
+            let x_even_1 = Complex32::new(even_a1.re + even_a3_re, even_a1.im + even_a3_im);
+            let x_even_3 = Complex32::new(even_a1.re - even_a3_re, even_a1.im - even_a3_im);
+
+            // Compute radix-4 DFT on odd indices (t1, t3, t5, t7)
+            let odd_a0 = t1.add(&t5);
+            let odd_a1 = t1.sub(&t5);
+            let odd_a2 = t3.add(&t7);
+            let odd_a3_re = t3.im - t7.im;
+            let odd_a3_im = t7.re - t3.re;
+
+            let x_odd_0 = odd_a0.add(&odd_a2);
+            let x_odd_2 = odd_a0.sub(&odd_a2);
+            let x_odd_1 = Complex32::new(odd_a1.re + odd_a3_re, odd_a1.im + odd_a3_im);
+            let x_odd_3 = Complex32::new(odd_a1.re - odd_a3_re, odd_a1.im - odd_a3_im);
+
+            // Combine even and odd parts with additional twiddle factors.
+            use core::f32::consts::FRAC_1_SQRT_2;
+
+            // For stride=1, k=0, so j = 8*i
+            let j = 8 * i;
+            dst[j] = x_even_0.add(&x_odd_0);
+            dst[j + 4] = x_even_0.sub(&x_odd_0);
+
+            let w8_1_odd_1 = Complex32::new(
+                FRAC_1_SQRT_2 * (x_odd_1.re + x_odd_1.im),
+                FRAC_1_SQRT_2 * (x_odd_1.im - x_odd_1.re),
+            );
+            dst[j + 1] = x_even_1.add(&w8_1_odd_1);
+            dst[j + 5] = x_even_1.sub(&w8_1_odd_1);
+
+            let w8_2_odd_2 = Complex32::new(x_odd_2.im, -x_odd_2.re);
+            dst[j + 2] = x_even_2.add(&w8_2_odd_2);
+            dst[j + 6] = x_even_2.sub(&w8_2_odd_2);
+
+            let w8_3_odd_3 = Complex32::new(
+                FRAC_1_SQRT_2 * (x_odd_3.im - x_odd_3.re),
+                -FRAC_1_SQRT_2 * (x_odd_3.re + x_odd_3.im),
+            );
+            dst[j + 3] = x_even_3.add(&w8_3_odd_3);
+            dst[j + 7] = x_even_3.sub(&w8_3_odd_3);
+        }
+
+        // Process scalar tail with identity twiddles.
+        for i in simd_iters..eighth_samples {
+            // Load 8 input values
+            let z0 = src[i];
+            let z1 = src[i + eighth_samples];
+            let z2 = src[i + eighth_samples * 2];
+            let z3 = src[i + eighth_samples * 3];
+            let z4 = src[i + eighth_samples * 4];
+            let z5 = src[i + eighth_samples * 5];
+            let z6 = src[i + eighth_samples * 6];
+            let z7 = src[i + eighth_samples * 7];
+
+            // Identity twiddles: t_k = z_k
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
+            let t5 = z5;
+            let t6 = z6;
+            let t7 = z7;
+
+            // Split-radix decomposition:
+            // First, compute radix-4 DFT on even indices (z0, t2, t4, t6)
+            let even_a0 = z0.add(&t4);
+            let even_a1 = z0.sub(&t4);
+            let even_a2 = t2.add(&t6);
+            let even_a3_re = t2.im - t6.im;
+            let even_a3_im = t6.re - t2.re;
+
+            let x_even_0 = even_a0.add(&even_a2);
+            let x_even_2 = even_a0.sub(&even_a2);
+            let x_even_1 = Complex32::new(even_a1.re + even_a3_re, even_a1.im + even_a3_im);
+            let x_even_3 = Complex32::new(even_a1.re - even_a3_re, even_a1.im - even_a3_im);
+
+            // Compute radix-4 DFT on odd indices (t1, t3, t5, t7)
+            let odd_a0 = t1.add(&t5);
+            let odd_a1 = t1.sub(&t5);
+            let odd_a2 = t3.add(&t7);
+            let odd_a3_re = t3.im - t7.im;
+            let odd_a3_im = t7.re - t3.re;
+
+            let x_odd_0 = odd_a0.add(&odd_a2);
+            let x_odd_2 = odd_a0.sub(&odd_a2);
+            let x_odd_1 = Complex32::new(odd_a1.re + odd_a3_re, odd_a1.im + odd_a3_im);
+            let x_odd_3 = Complex32::new(odd_a1.re - odd_a3_re, odd_a1.im - odd_a3_im);
+
+            // Combine even and odd parts with additional twiddle factors
+            use core::f32::consts::FRAC_1_SQRT_2;
+
+            let j = 8 * i;
+            dst[j] = x_even_0.add(&x_odd_0);
+            dst[j + 4] = x_even_0.sub(&x_odd_0);
+
+            let w8_1_odd_1 = Complex32::new(
+                FRAC_1_SQRT_2 * (x_odd_1.re + x_odd_1.im),
+                FRAC_1_SQRT_2 * (x_odd_1.im - x_odd_1.re),
+            );
+            dst[j + 1] = x_even_1.add(&w8_1_odd_1);
+            dst[j + 5] = x_even_1.sub(&w8_1_odd_1);
+
+            let w8_2_odd_2 = Complex32::new(x_odd_2.im, -x_odd_2.re);
+            dst[j + 2] = x_even_2.add(&w8_2_odd_2);
+            dst[j + 6] = x_even_2.sub(&w8_2_odd_2);
+
+            let w8_3_odd_3 = Complex32::new(
+                FRAC_1_SQRT_2 * (x_odd_3.im - x_odd_3.re),
+                -FRAC_1_SQRT_2 * (x_odd_3.re + x_odd_3.im),
+            );
+            dst[j + 3] = x_even_3.add(&w8_3_odd_3);
+            dst[j + 7] = x_even_3.sub(&w8_3_odd_3);
+        }
+
+        return;
+    }
+
     // Process iterations using packed twiddle format.
     for i in start_index..simd_iters {
         let k = i % stride;

@@ -56,24 +56,14 @@ pub(super) unsafe fn butterfly_radix8_stride1_sse4_2(
             let z7_ptr = src.as_ptr().add(i + eighth_samples * 7) as *const f32;
             let z7 = _mm_loadu_ps(z7_ptr);
 
-            // Load prepackaged twiddles in packed format (2 complex per load, stride 4 floats).
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 7) as *const f32;
-            let w1 = _mm_loadu_ps(tw_ptr); // w1[i], w1[i+1]
-            let w2 = _mm_loadu_ps(tw_ptr.add(4)); // w2[i], w2[i+1]
-            let w3 = _mm_loadu_ps(tw_ptr.add(8)); // w3[i], w3[i+1]
-            let w4 = _mm_loadu_ps(tw_ptr.add(12)); // w4[i], w4[i+1]
-            let w5 = _mm_loadu_ps(tw_ptr.add(16)); // w5[i], w5[i+1]
-            let w6 = _mm_loadu_ps(tw_ptr.add(20)); // w6[i], w6[i+1]
-            let w7 = _mm_loadu_ps(tw_ptr.add(24)); // w7[i], w7[i+1]
-
-            // Apply twiddle factors.
-            let t1 = complex_mul_sse4_2(w1, z1);
-            let t2 = complex_mul_sse4_2(w2, z2);
-            let t3 = complex_mul_sse4_2(w3, z3);
-            let t4 = complex_mul_sse4_2(w4, z4);
-            let t5 = complex_mul_sse4_2(w5, z5);
-            let t6 = complex_mul_sse4_2(w6, z6);
-            let t7 = complex_mul_sse4_2(w7, z7);
+            // Stride=1 optimization: all twiddles are identity (1+0i), skip multiplication.
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
+            let t5 = z5;
+            let t6 = z6;
+            let t7 = z7;
 
             // Compute radix-4 DFT on even indices (z0, t2, t4, t6).
             let even_a0 = _mm_add_ps(z0, t4);

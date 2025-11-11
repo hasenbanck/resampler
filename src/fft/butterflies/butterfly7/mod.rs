@@ -245,6 +245,128 @@ fn butterfly_radix7_scalar<const WIDTH: usize>(
     let seventh_samples = samples / 7;
     let simd_iters = (seventh_samples / WIDTH) * WIDTH;
 
+    // Stride=1 optimization: skip identity twiddle multiplications.
+    if stride == 1 {
+        for i in start_index..simd_iters {
+            let z0 = src[i];
+            let z1 = src[i + seventh_samples];
+            let z2 = src[i + seventh_samples * 2];
+            let z3 = src[i + seventh_samples * 3];
+            let z4 = src[i + seventh_samples * 4];
+            let z5 = src[i + seventh_samples * 5];
+            let z6 = src[i + seventh_samples * 6];
+
+            // Identity twiddles: t_k = (1+0i) * z_k = z_k
+            let sum_all = z1.add(&z2).add(&z3).add(&z4).add(&z5).add(&z6);
+
+            // Radix-7 DFT decomposition.
+            let a1 = z1.add(&z6);
+            let a2 = z2.add(&z5);
+            let a3 = z3.add(&z4);
+
+            let b1_re = z1.im - z6.im;
+            let b1_im = z6.re - z1.re;
+            let b2_re = z2.im - z5.im;
+            let b2_im = z5.re - z2.re;
+            let b3_re = z3.im - z4.im;
+            let b3_im = z4.re - z3.re;
+
+            let j = 7 * i;
+            dst[j] = z0.add(&sum_all);
+
+            for idx in 1..7 {
+                let (cos1, sin1, cos2, sin2, cos3, sin3) = match idx {
+                    1 => (
+                        COS_2PI_7, SIN_2PI_7, COS_4PI_7, SIN_4PI_7, COS_6PI_7, SIN_6PI_7,
+                    ),
+                    2 => (
+                        COS_4PI_7, SIN_4PI_7, COS_6PI_7, -SIN_6PI_7, COS_2PI_7, -SIN_2PI_7,
+                    ),
+                    3 => (
+                        COS_6PI_7, SIN_6PI_7, COS_2PI_7, -SIN_2PI_7, COS_4PI_7, SIN_4PI_7,
+                    ),
+                    4 => (
+                        COS_6PI_7, -SIN_6PI_7, COS_2PI_7, SIN_2PI_7, COS_4PI_7, -SIN_4PI_7,
+                    ),
+                    5 => (
+                        COS_4PI_7, -SIN_4PI_7, COS_6PI_7, SIN_6PI_7, COS_2PI_7, SIN_2PI_7,
+                    ),
+                    6 => (
+                        COS_2PI_7, -SIN_2PI_7, COS_4PI_7, -SIN_4PI_7, COS_6PI_7, -SIN_6PI_7,
+                    ),
+                    _ => unreachable!(),
+                };
+
+                let c_re = z0.re + cos1 * a1.re + cos2 * a2.re + cos3 * a3.re;
+                let c_im = z0.im + cos1 * a1.im + cos2 * a2.im + cos3 * a3.im;
+                let d_re = sin1 * b1_re + sin2 * b2_re + sin3 * b3_re;
+                let d_im = sin1 * b1_im + sin2 * b2_im + sin3 * b3_im;
+
+                dst[j + idx] = Complex32::new(c_re + d_re, c_im + d_im);
+            }
+        }
+
+        // Process scalar tail.
+        for i in simd_iters..seventh_samples {
+            let z0 = src[i];
+            let z1 = src[i + seventh_samples];
+            let z2 = src[i + seventh_samples * 2];
+            let z3 = src[i + seventh_samples * 3];
+            let z4 = src[i + seventh_samples * 4];
+            let z5 = src[i + seventh_samples * 5];
+            let z6 = src[i + seventh_samples * 6];
+
+            // Identity twiddles: t_k = z_k
+            let sum_all = z1.add(&z2).add(&z3).add(&z4).add(&z5).add(&z6);
+
+            let a1 = z1.add(&z6);
+            let a2 = z2.add(&z5);
+            let a3 = z3.add(&z4);
+
+            let b1_re = z1.im - z6.im;
+            let b1_im = z6.re - z1.re;
+            let b2_re = z2.im - z5.im;
+            let b2_im = z5.re - z2.re;
+            let b3_re = z3.im - z4.im;
+            let b3_im = z4.re - z3.re;
+
+            let j = 7 * i;
+            dst[j] = z0.add(&sum_all);
+
+            for idx in 1..7 {
+                let (cos1, sin1, cos2, sin2, cos3, sin3) = match idx {
+                    1 => (
+                        COS_2PI_7, SIN_2PI_7, COS_4PI_7, SIN_4PI_7, COS_6PI_7, SIN_6PI_7,
+                    ),
+                    2 => (
+                        COS_4PI_7, SIN_4PI_7, COS_6PI_7, -SIN_6PI_7, COS_2PI_7, -SIN_2PI_7,
+                    ),
+                    3 => (
+                        COS_6PI_7, SIN_6PI_7, COS_2PI_7, -SIN_2PI_7, COS_4PI_7, SIN_4PI_7,
+                    ),
+                    4 => (
+                        COS_6PI_7, -SIN_6PI_7, COS_2PI_7, SIN_2PI_7, COS_4PI_7, -SIN_4PI_7,
+                    ),
+                    5 => (
+                        COS_4PI_7, -SIN_4PI_7, COS_6PI_7, SIN_6PI_7, COS_2PI_7, SIN_2PI_7,
+                    ),
+                    6 => (
+                        COS_2PI_7, -SIN_2PI_7, COS_4PI_7, -SIN_4PI_7, COS_6PI_7, -SIN_6PI_7,
+                    ),
+                    _ => unreachable!(),
+                };
+
+                let c_re = z0.re + cos1 * a1.re + cos2 * a2.re + cos3 * a3.re;
+                let c_im = z0.im + cos1 * a1.im + cos2 * a2.im + cos3 * a3.im;
+                let d_re = sin1 * b1_re + sin2 * b2_re + sin3 * b3_re;
+                let d_im = sin1 * b1_im + sin2 * b2_im + sin3 * b3_im;
+
+                dst[j + idx] = Complex32::new(c_re + d_re, c_im + d_im);
+            }
+        }
+        return;
+    }
+
     // Process SIMD-packed region.
     for i in start_index..simd_iters {
         let k = i % stride;

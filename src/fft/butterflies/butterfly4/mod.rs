@@ -241,6 +241,51 @@ pub(super) fn butterfly_radix4_scalar<const WIDTH: usize>(
     let quarter_samples = samples >> 2;
     let simd_iters = (quarter_samples / WIDTH) * WIDTH;
 
+    // Stride=1 optimization: skip identity twiddle multiplications.
+    if stride == 1 {
+        for i in start_index..simd_iters {
+            let z0 = src[i];
+            let z1 = src[i + quarter_samples];
+            let z2 = src[i + quarter_samples * 2];
+            let z3 = src[i + quarter_samples * 3];
+
+            // Identity twiddles: t1 = z1, t2 = z2, t3 = z3
+            let a0 = z0.add(&z2);
+            let a1 = z0.sub(&z2);
+            let a2 = z1.add(&z3);
+            let a3_re = z1.im - z3.im;
+            let a3_im = z3.re - z1.re;
+
+            let j = 4 * i;
+            dst[j] = a0.add(&a2);
+            dst[j + 2] = a0.sub(&a2);
+            dst[j + 1] = Complex32::new(a1.re + a3_re, a1.im + a3_im);
+            dst[j + 3] = Complex32::new(a1.re - a3_re, a1.im - a3_im);
+        }
+
+        // Process scalar tail
+        for i in simd_iters..quarter_samples {
+            let z0 = src[i];
+            let z1 = src[i + quarter_samples];
+            let z2 = src[i + quarter_samples * 2];
+            let z3 = src[i + quarter_samples * 3];
+
+            // Identity twiddles: t1 = z1, t2 = z2, t3 = z3
+            let a0 = z0.add(&z2);
+            let a1 = z0.sub(&z2);
+            let a2 = z1.add(&z3);
+            let a3_re = z1.im - z3.im;
+            let a3_im = z3.re - z1.re;
+
+            let j = 4 * i;
+            dst[j] = a0.add(&a2);
+            dst[j + 2] = a0.sub(&a2);
+            dst[j + 1] = Complex32::new(a1.re + a3_re, a1.im + a3_im);
+            dst[j + 3] = Complex32::new(a1.re - a3_re, a1.im - a3_im);
+        }
+        return;
+    }
+
     // Process iterations using packed twiddle format
     for i in start_index..simd_iters {
         let k = i % stride;

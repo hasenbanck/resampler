@@ -70,22 +70,13 @@ pub(super) unsafe fn butterfly_radix7_stride1_avx_fma(
             let z6_ptr = src.as_ptr().add(i + seventh_samples * 6) as *const f32;
             let z6 = _mm256_loadu_ps(z6_ptr);
 
-            // Load prepackaged twiddles directly (no shuffle needed).
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 6) as *const f32;
-            let w1 = _mm256_loadu_ps(tw_ptr); // w1[i..i+4]
-            let w2 = _mm256_loadu_ps(tw_ptr.add(8)); // w2[i..i+4]
-            let w3 = _mm256_loadu_ps(tw_ptr.add(16)); // w3[i..i+4]
-            let w4 = _mm256_loadu_ps(tw_ptr.add(24)); // w4[i..i+4]
-            let w5 = _mm256_loadu_ps(tw_ptr.add(32)); // w5[i..i+4]
-            let w6 = _mm256_loadu_ps(tw_ptr.add(40)); // w6[i..i+4]
-
-            // Complex multiply all twiddles.
-            let t1 = complex_mul_avx(w1, z1);
-            let t2 = complex_mul_avx(w2, z2);
-            let t3 = complex_mul_avx(w3, z3);
-            let t4 = complex_mul_avx(w4, z4);
-            let t5 = complex_mul_avx(w5, z5);
-            let t6 = complex_mul_avx(w6, z6);
+            // Identity twiddles: t_k = (1+0i) * z_k = z_k (skip twiddle load and multiply)
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
+            let t5 = z5;
+            let t6 = z6;
 
             // DC component.
             let sum_12 = _mm256_add_ps(t1, t2);

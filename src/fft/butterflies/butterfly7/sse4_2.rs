@@ -57,22 +57,13 @@ pub(super) unsafe fn butterfly_radix7_stride1_sse4_2(
             let z6_ptr = src.as_ptr().add(i + seventh_samples * 6) as *const f32;
             let z6 = _mm_loadu_ps(z6_ptr);
 
-            // Load prepackaged twiddles directly (no shuffle needed).
-            let tw_ptr = stage_twiddles.as_ptr().add(i * 6) as *const f32;
-            let w1 = _mm_loadu_ps(tw_ptr); // w1[i], w1[i+1]
-            let w2 = _mm_loadu_ps(tw_ptr.add(4)); // w2[i], w2[i+1]
-            let w3 = _mm_loadu_ps(tw_ptr.add(8)); // w3[i], w3[i+1]
-            let w4 = _mm_loadu_ps(tw_ptr.add(12)); // w4[i], w4[i+1]
-            let w5 = _mm_loadu_ps(tw_ptr.add(16)); // w5[i], w5[i+1]
-            let w6 = _mm_loadu_ps(tw_ptr.add(20)); // w6[i], w6[i+1]
-
-            // Complex multiply.
-            let t1 = complex_mul_sse4_2(w1, z1);
-            let t2 = complex_mul_sse4_2(w2, z2);
-            let t3 = complex_mul_sse4_2(w3, z3);
-            let t4 = complex_mul_sse4_2(w4, z4);
-            let t5 = complex_mul_sse4_2(w5, z5);
-            let t6 = complex_mul_sse4_2(w6, z6);
+            // Identity twiddles: t_k = (1+0i) * z_k = z_k (skip twiddle load and multiply)
+            let t1 = z1;
+            let t2 = z2;
+            let t3 = z3;
+            let t4 = z4;
+            let t5 = z5;
+            let t6 = z6;
 
             // Radix-7 DFT decomposition
             let sum_all = _mm_add_ps(
