@@ -1,8 +1,11 @@
-use core::{arch::x86_64::*, f32::consts::FRAC_1_SQRT_2};
+use core::arch::x86_64::*;
 
 use crate::fft::{
     Complex32,
-    butterflies::ops::{complex_mul_avx, complex_mul_i_avx, load_neg_imag_mask_avx},
+    butterflies::ops::{
+        complex_mul_avx, complex_mul_i_avx, load_neg_imag_mask_avx, load_scale_avx, v8x_avx,
+        w8x_avx,
+    },
 };
 
 /// Performs a single radix-8 Stockham butterfly stage for stride=1 (out-of-place, AVX+FMA).
@@ -22,7 +25,7 @@ pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
 
     unsafe {
         let neg_imag_mask = load_neg_imag_mask_avx();
-        let frac_1_sqrt2_scalar = FRAC_1_SQRT_2;
+        let scale = load_scale_avx();
 
         for i in (0..simd_iters).step_by(4) {
             // Load 8 input values from the 8 "eighths" of the input array.
@@ -92,19 +95,8 @@ pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
             // out4 = x_even_0 - x_odd_0
             let out4 = _mm256_sub_ps(x_even_0, x_odd_0);
 
-            // out1 = x_even_1 + W_8^1 * x_odd_1
-            // W_8^1 = (1-i)/√2 as interleaved complex: [re, im, re, im, ...] = [1/√2, -1/√2, ...]
-            let w8_1 = _mm256_setr_ps(
-                frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-            );
-            let w8_1_x_odd_1 = complex_mul_avx(w8_1, x_odd_1);
+            // out1 = x_even_1 + W_8^1 * x_odd_1 (W_8^1 = (1-i)/√2)
+            let w8_1_x_odd_1 = w8x_avx(x_odd_1, neg_imag_mask, scale);
             let out1 = _mm256_add_ps(x_even_1, w8_1_x_odd_1);
             // out5 = x_even_1 - W_8^1 * x_odd_1
             let out5 = _mm256_sub_ps(x_even_1, w8_1_x_odd_1);
@@ -116,19 +108,8 @@ pub(super) unsafe fn butterfly_radix8_stride1_avx_fma(
             // out6 = x_even_2 - W_8^2 * x_odd_2
             let out6 = _mm256_sub_ps(x_even_2, w8_2_x_odd_2);
 
-            // out3 = x_even_3 + W_8^3 * x_odd_3
-            // W_8^3 = (-1-i)/√2 as interleaved complex: [re, im, re, im, ...] = [-1/√2, -1/√2, ...]
-            let w8_3 = _mm256_setr_ps(
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-            );
-            let w8_3_x_odd_3 = complex_mul_avx(w8_3, x_odd_3);
+            // out3 = x_even_3 + W_8^3 * x_odd_3 (W_8^3 = (-1-i)/√2)
+            let w8_3_x_odd_3 = v8x_avx(x_odd_3, neg_imag_mask, scale);
             let out3 = _mm256_add_ps(x_even_3, w8_3_x_odd_3);
             // out7 = x_even_3 - W_8^3 * x_odd_3
             let out7 = _mm256_sub_ps(x_even_3, w8_3_x_odd_3);
@@ -217,7 +198,7 @@ pub(super) unsafe fn butterfly_radix8_generic_avx_fma(
 
     unsafe {
         let neg_imag_mask = load_neg_imag_mask_avx();
-        let frac_1_sqrt2_scalar = FRAC_1_SQRT_2;
+        let scale = load_scale_avx();
 
         for i in (0..simd_iters).step_by(4) {
             let k = i % stride;
@@ -298,18 +279,8 @@ pub(super) unsafe fn butterfly_radix8_generic_avx_fma(
             let out0 = _mm256_add_ps(x_even_0, x_odd_0);
             let out4 = _mm256_sub_ps(x_even_0, x_odd_0);
 
-            // W_8^1 = (1-i)/√2 as interleaved complex: [1/√2, -1/√2, ...]
-            let w8_1 = _mm256_setr_ps(
-                frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-            );
-            let w8_1_x_odd_1 = complex_mul_avx(w8_1, x_odd_1);
+            // W_8^1 = (1-i)/√2
+            let w8_1_x_odd_1 = w8x_avx(x_odd_1, neg_imag_mask, scale);
             let out1 = _mm256_add_ps(x_even_1, w8_1_x_odd_1);
             let out5 = _mm256_sub_ps(x_even_1, w8_1_x_odd_1);
 
@@ -318,18 +289,8 @@ pub(super) unsafe fn butterfly_radix8_generic_avx_fma(
             let out2 = _mm256_add_ps(x_even_2, w8_2_x_odd_2);
             let out6 = _mm256_sub_ps(x_even_2, w8_2_x_odd_2);
 
-            // W_8^3 = (-1-i)/√2 as interleaved complex: [-1/√2, -1/√2, ...]
-            let w8_3 = _mm256_setr_ps(
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-                -frac_1_sqrt2_scalar,
-            );
-            let w8_3_x_odd_3 = complex_mul_avx(w8_3, x_odd_3);
+            // W_8^3 = (-1-i)/√2
+            let w8_3_x_odd_3 = v8x_avx(x_odd_3, neg_imag_mask, scale);
             let out3 = _mm256_add_ps(x_even_3, w8_3_x_odd_3);
             let out7 = _mm256_sub_ps(x_even_3, w8_3_x_odd_3);
 
