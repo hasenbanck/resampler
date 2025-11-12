@@ -270,9 +270,6 @@ impl<D> RadixFFT<D> {
     ///
     /// **Scalar**: Interleaved layout
     /// Example radix-5: [w1[0], w2[0], w3[0], w4[0], w1[1], w2[1], ...]
-    ///
-    /// This provides 20-30% performance improvement for high-radix butterflies by enabling
-    /// direct SIMD loads without shuffling (eliminates 16-24 cycles per 4 samples).
     fn compute_stockham_twiddles(n: usize, factors: &[Radix], width: SimdWidth) -> Vec<Complex32> {
         let mut twiddles = Vec::new();
         let mut stage_size = 1;

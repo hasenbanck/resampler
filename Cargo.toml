@@ -2,7 +2,7 @@
 name = "resampler"
 description = "A small audio resampling library"
 authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
-version = "0.3.7"
+version = "0.3.8"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0 OR MIT"
