@@ -20,7 +20,7 @@ jobs:
           - stable
           - 1.89.0 # MSRV
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Install rust version
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -50,7 +50,7 @@ jobs:
           - x86-64-v3
           # - x86-64-v4 GitHub Action Runner don't support AVX-512 yet.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Install rust version
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -89,13 +89,13 @@ jobs:
           - os: ubuntu-latest
             target: wasm32-unknown-unknown
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Install rust version
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{matrix.toolchain}}
           target: ${{matrix.target}}
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Build Default
         run: cargo build --target wasm32-unknown-unknown --release
 
@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -120,7 +120,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -147,7 +147,7 @@ jobs:
           # - x86-64-v4 GitHub Action Runner don't support AVX-512 yet.
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
