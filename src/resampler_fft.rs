@@ -1,5 +1,4 @@
 use alloc::{sync::Arc, vec, vec::Vec};
-use core::array;
 #[cfg(not(feature = "no_std"))]
 use std::{
     collections::HashMap,
@@ -57,6 +56,7 @@ impl ResamplerFft {
     /// Create a new [`ResamplerFft`].
     ///
     /// Parameters are:
+    /// - `channels`: The channel count.
     /// - `sample_rate_input`: Input sample rate.
     /// - `sample_rate_output`: Output sample rate.
     pub fn new(

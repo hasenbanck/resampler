@@ -1,7 +1,8 @@
 //! # Audio resampling library
 //!
-//! Resampler is a small, zero-dependency crate for high-quality audio resampling between common sample rates.
-//! It provides both FFT-based and FIR-based resamplers optimized for different use cases.
+//! Resampler is a small, zero-dependency crate for high-quality audio resampling between common
+//! sample rates. It provides both FFT-based and FIR-based resamplers optimized for different use
+//! cases.
 //!
 //! ## Usage Examples
 //!
