@@ -204,6 +204,7 @@ impl ResamplerFir {
     /// Create a new [`ResamplerFir`].
     ///
     /// Parameters:
+    /// - `channels`: The channel count.
     /// - `input_rate`: Input sample rate.
     /// - `output_rate`: Output sample rate.
     /// - `latency`: Latency configuration determining filter length (32, 64, or 128 taps).
