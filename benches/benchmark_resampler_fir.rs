@@ -64,7 +64,8 @@ fn bench_resampler_fir(c: &mut Criterion) {
             BenchmarkId::new("process", bench_config.description),
             bench_config,
             |b, bench_config| {
-                let mut resampler = ResamplerFir::<CHANNELS>::new(
+                let mut resampler = ResamplerFir::new(
+                    CHANNELS,
                     bench_config.input_rate,
                     bench_config.output_rate,
                     Latency::Sample64,

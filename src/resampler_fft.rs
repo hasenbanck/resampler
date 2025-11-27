@@ -38,44 +38,47 @@ static FFT_CACHE: LazyLock<Mutex<HashMap<u64, FftCacheData>>> =
 /// High-quality and high-performance FFT-based audio resampler supporting multi-channel audio.
 ///
 /// `ResamplerFft` uses the overlap-add FFT method with Kaiser windowing to convert audio
-/// between different sample rates. The const generic parameter `CHANNEL` specifies the
+/// between different sample rates. The field channels specifies the
 /// number of audio channels (e.g., 1 for mono, 2 for stereo).
-pub struct ResamplerFft<const CHANNEL: usize> {
+pub struct ResamplerFft {
+    channels: usize,
     fft_resampler: FftResampler,
     chunk_size_input: usize,
     chunk_size_output: usize,
     fft_size_input: usize,
     fft_size_output: usize,
     saved_frames: usize,
-    overlaps: [Vec<f32>; CHANNEL],
-    input_scratch: [Vec<f32>; CHANNEL],
-    output_scratch: [Vec<f32>; CHANNEL],
+    overlaps: Vec<f32>,
+    input_scratch: Vec<f32>,
+    output_scratch: Vec<f32>,
 }
 
-impl<const CHANNEL: usize> ResamplerFft<CHANNEL> {
+impl ResamplerFft {
     /// Create a new [`ResamplerFft`].
     ///
     /// Parameters are:
     /// - `sample_rate_input`: Input sample rate.
     /// - `sample_rate_output`: Output sample rate.
-    pub fn new(sample_rate_input: SampleRate, sample_rate_output: SampleRate) -> Self {
+    pub fn new(
+        channels: usize,
+        sample_rate_input: SampleRate,
+        sample_rate_output: SampleRate,
+    ) -> Self {
         // Get the optimized FFT sizes and factors directly from the conversion table.
         // These sizes are carefully chosen for efficient factorization and minimal latency.
         let config = ConversionConfig::from_sample_rates(sample_rate_input, sample_rate_output);
         let (fft_size_input, factors_in, fft_size_output, factors_out) =
             config.scale_for_throughput();
 
-        let overlaps: [Vec<f32>; CHANNEL] = array::from_fn(|_| vec![0.0; fft_size_output]);
+        let overlaps: Vec<f32> = vec![0.0; fft_size_output * channels];
 
-        let chunk_size_input = fft_size_input * CHANNEL;
-        let chunk_size_output = fft_size_output * CHANNEL;
+        let chunk_size_input = fft_size_input * channels;
+        let chunk_size_output = fft_size_output * channels;
 
         let needed_input_buffer_size = chunk_size_input + fft_size_input;
         let needed_buffer_size_output = chunk_size_output + fft_size_output;
-        let input_scratch: [Vec<f32>; CHANNEL] =
-            array::from_fn(|_| vec![0.0; needed_input_buffer_size]);
-        let output_scratch: [Vec<f32>; CHANNEL] =
-            array::from_fn(|_| vec![0.0; needed_buffer_size_output]);
+        let input_scratch: Vec<f32> = vec![0.0; needed_input_buffer_size * channels];
+        let output_scratch: Vec<f32> = vec![0.0; needed_buffer_size_output * channels];
 
         let saved_frames = 0;
 
@@ -89,6 +92,7 @@ impl<const CHANNEL: usize> ResamplerFft<CHANNEL> {
         );
 
         ResamplerFft {
+            channels,
             chunk_size_input,
             chunk_size_output,
             fft_size_input,
@@ -99,6 +103,16 @@ impl<const CHANNEL: usize> ResamplerFft<CHANNEL> {
             saved_frames,
             fft_resampler,
         }
+    }
+
+    /// Returns the size used to store input scratch for 1 channel
+    fn input_scratch_ch_size(&self) -> usize {
+        self.chunk_size_input + self.fft_size_input
+    }
+
+    /// Returns the size used to store output scratch for 1 channel
+    fn output_scratch_ch_size(&self) -> usize {
+        self.chunk_size_input + self.fft_size_input
     }
 
     /// Returns the required input buffer size in total f32 values (including all channels).
@@ -140,7 +154,7 @@ impl<const CHANNEL: usize> ResamplerFft<CHANNEL> {
     /// ```rust
     /// use resampler::{ResamplerFft, SampleRate};
     ///
-    /// let mut resampler = ResamplerFft::<1>::new(SampleRate::Hz48000, SampleRate::Hz44100);
+    /// let mut resampler = ResamplerFft::new(1, SampleRate::Hz48000, SampleRate::Hz44100);
     ///
     /// let input = vec![0.0f32; resampler.chunk_size_input()];
     /// let mut output = vec![0.0f32; resampler.chunk_size_output()];
@@ -164,37 +178,48 @@ impl<const CHANNEL: usize> ResamplerFft<CHANNEL> {
             return Err(ResampleError::InvalidOutputBufferSize);
         }
 
+        let in_scratch_ch_len = self.input_scratch_ch_size();
+        let out_scratch_ch_len = self.output_scratch_ch_size();
         // Deinterleave input into per-channel scratch buffers.
         (0..self.fft_size_input).for_each(|frame_index| {
-            (0..CHANNEL).for_each(|channel| {
-                self.input_scratch[channel][frame_index] = input[frame_index * CHANNEL + channel];
+            (0..self.channels).for_each(|channel| {
+                self.input_scratch[channel * in_scratch_ch_len + frame_index] =
+                    input[frame_index * self.channels + channel];
             });
         });
 
         let (subchunks_to_process, output_scratch_offset) = (
-            self.chunk_size_input / (self.fft_size_input * CHANNEL),
+            self.chunk_size_input / (self.fft_size_input * self.channels),
             self.saved_frames,
         );
 
         // Resample between input and output scratch buffers.
-        for channel in 0..CHANNEL {
-            for (input_chunk, output_chunk) in self.input_scratch[channel]
+        for channel in 0..self.channels {
+            let start = channel * in_scratch_ch_len;
+            let end = start + in_scratch_ch_len;
+            for (input_chunk, output_chunk) in self.input_scratch[start..end]
                 .chunks(self.fft_size_input)
                 .take(subchunks_to_process)
                 .zip(
-                    self.output_scratch[channel][output_scratch_offset..]
+                    self.output_scratch[channel * out_scratch_ch_len + output_scratch_offset..]
                         .chunks_mut(self.fft_size_output),
                 )
             {
-                self.fft_resampler
-                    .resample(input_chunk, output_chunk, &mut self.overlaps[channel]);
+                let start = self.fft_size_output * channel;
+                let end = start + self.fft_size_output;
+                self.fft_resampler.resample(
+                    input_chunk,
+                    output_chunk,
+                    &mut self.overlaps[start..end],
+                );
             }
         }
 
         // Deinterleave output from per-channel scratch buffers.
         (0..self.fft_size_output).for_each(|frame_index| {
-            (0..CHANNEL).for_each(|channel| {
-                output[frame_index * CHANNEL + channel] = self.output_scratch[channel][frame_index];
+            (0..self.channels).for_each(|channel| {
+                output[frame_index * self.channels + channel] =
+                    self.output_scratch[channel * out_scratch_ch_len + frame_index];
             });
         });
 
@@ -410,7 +435,7 @@ mod tests {
         ];
 
         for (input_rate, output_rate, desc) in test_cases {
-            let mut resampler = ResamplerFft::<1>::new(input_rate, output_rate);
+            let mut resampler = ResamplerFft::new(1, input_rate, output_rate);
 
             let dc_amplitude = 0.5f32;
             let input = vec![dc_amplitude; resampler.chunk_size_input()];
@@ -444,7 +469,7 @@ mod tests {
         ];
 
         for (input_rate, output_rate, desc) in test_cases {
-            let mut resampler = ResamplerFft::<1>::new(input_rate, output_rate);
+            let mut resampler = ResamplerFft::new(1, input_rate, output_rate);
 
             let amplitude = 0.5f32;
             let frequency = 1000.0f32;
@@ -487,7 +512,7 @@ mod tests {
 
     #[test]
     fn test_stereo_dc_amplitude_preservation() {
-        let mut resampler = ResamplerFft::<2>::new(SampleRate::Hz48000, SampleRate::Hz44100);
+        let mut resampler = ResamplerFft::new(2, SampleRate::Hz48000, SampleRate::Hz44100);
 
         let dc_amplitude_left = 0.3f32;
         let dc_amplitude_right = 0.6f32;

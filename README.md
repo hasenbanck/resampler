@@ -15,7 +15,7 @@ It provides both FFT-based and FIR-based resamplers optimized for different use 
 use resampler::{ResamplerFft, SampleRate};
 
 // Create a stereo resampler (2 channels) from 44.1 kHz to 48 kHz.
-let mut resampler = ResamplerFft::<2>::new(SampleRate::Hz44100, SampleRate::Hz48000);
+let mut resampler = ResamplerFft::new(2, SampleRate::Hz44100, SampleRate::Hz48000);
 
 // Get required buffer sizes (already includes all channels).
 let input_size = resampler.chunk_size_input();
@@ -34,7 +34,8 @@ resampler.resample(&input, &mut output).unwrap();
 use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
 
 // Create a stereo resampler with configurable latency (16, 32, or 64 samples).
-let mut resampler = ResamplerFir::<2>::new(
+let mut resampler = ResamplerFir::new(
+    2,
     SampleRate::Hz48000,
     SampleRate::Hz44100,
     Latency::Sample64,
@@ -54,7 +55,7 @@ println!("Consumed {consumed} samples, produced {produced} samples");
 Both resamplers provide good quality, but are optimized for different use cases:
 
 | Feature     | ResamplerFft                     | ResamplerFir                 |
-|-------------|----------------------------------|------------------------------|
+| ----------- | -------------------------------- | ---------------------------- |
 | Quality     | Very good (sharp rolloff)        | Good (slow rolloff)          |
 | Performance | Very fast                        | Fast (configurable)          |
 | Latency     | ~256 samples                     | 16-64 samples (configurable) |
@@ -62,35 +63,37 @@ Both resamplers provide good quality, but are optimized for different use cases:
 | Best for    | Non-latency sensitive processing | Low-latency processing       |
 
 Use ResamplerFft when:
-- You need the absolute highest quality
-- Latency is not a concern
-- Processing pre-recorded audio files
+
+-   You need the absolute highest quality
+-   Latency is not a concern
+-   Processing pre-recorded audio files
 
 Use ResamplerFir when:
-- You need low latency (real-time audio)
-- You can live with a slower rolloff
-- Working with streaming data
+
+-   You need low latency (real-time audio)
+-   You can live with a slower rolloff
+-   Working with streaming data
 
 ## FFT-Based Implementation
 
 The resampler uses an FFT-based overlap-add algorithm with Kaiser windowing for high-quality audio resampling.
 Key technical details:
 
-- Custom mixed-radix FFT with the Stockham Autosort algorithm.
-- SIMD optimizations: All butterflies have SSE2, SSE4.2, AVX+FMA, and ARM NEON implementations.
-- Stopband attenuation of -100 dB using the Kaiser windows function.
-- Latency around 256 samples.
+-   Custom mixed-radix FFT with the Stockham Autosort algorithm.
+-   SIMD optimizations: All butterflies have SSE2, SSE4.2, AVX+FMA, and ARM NEON implementations.
+-   Stopband attenuation of -100 dB using the Kaiser windows function.
+-   Latency around 256 samples.
 
 ## FIR-Based Implementation
 
 The FIR resampler uses a polyphase filter with linear interpolation for high-quality audio resampling with low latency.
 Key technical details:
 
-- Polyphase decomposition: 1024 phases with linear interpolation between phases.
-- SIMD optimizations: Convolution kernels optimized with SSE2, SSE4.2, AVX+FMA, AVX-512, and ARM NEON.
-- Configurable filter length: 32, 64, or 128 taps (16, 32, or 64 samples latency).
-- Adjustable rolloff and stopband attenuation.
-- Streaming API: Accepts arbitrary input buffer sizes for flexible real-time processing.
+-   Polyphase decomposition: 1024 phases with linear interpolation between phases.
+-   SIMD optimizations: Convolution kernels optimized with SSE2, SSE4.2, AVX+FMA, AVX-512, and ARM NEON.
+-   Configurable filter length: 32, 64, or 128 taps (16, 32, or 64 samples latency).
+-   Adjustable rolloff and stopband attenuation.
+-   Streaming API: Accepts arbitrary input buffer sizes for flexible real-time processing.
 
 ## Performance
 
@@ -102,10 +105,10 @@ optimizations).
 Overall the SIMD for x86_64 have four levels implemented, targeting four possible CPU
 generations that build up on each other:
 
- * x86-64-v1: 128-bit SSE2 (around 2003-2004)
- * x86-64-v2: 128-bit SSE4.2 (around 2008-2011)
- * x86-64-v3: 256-bit AVX+FMA (around 2013-2015)
- * x86-64-v4: 512-bit AVX-512 (around 2017-2022)
+-   x86-64-v1: 128-bit SSE2 (around 2003-2004)
+-   x86-64-v2: 128-bit SSE4.2 (around 2008-2011)
+-   x86-64-v3: 256-bit AVX+FMA (around 2013-2015)
+-   x86-64-v4: 512-bit AVX-512 (around 2017-2022)
 
 ## no-std Compatibility
 
@@ -121,10 +124,10 @@ resampler = { version = "0.2", features = ["no_std"] }
 
 When the `no_std` feature is enabled:
 
-- Caching: The library will not cache FFT and FIR objects globally to shorten resampler creation time and lower overall
-  memory consumption for multiple resamplers.
+-   Caching: The library will not cache FFT and FIR objects globally to shorten resampler creation time and lower overall
+    memory consumption for multiple resamplers.
 
-- No runtime detection of SIMD functionality. You need to activate SIMD via compile time target features.
+-   No runtime detection of SIMD functionality. You need to activate SIMD via compile time target features.
 
 The default build (without `no_std` feature) has zero dependencies and uses the standard library for optimal performance
 and memory efficiency through global caching.
@@ -145,15 +148,15 @@ The following spectrograms demonstrate the high-quality output of the resampler 
 
 Other high-quality audio resampling libraries in Rust are:
 
-- [Rubato](https://github.com/HEnquist/rubato): The overlap-add resampling approach used in this library is based on
-  Rubato's implementation.
+-   [Rubato](https://github.com/HEnquist/rubato): The overlap-add resampling approach used in this library is based on
+    Rubato's implementation.
 
 ## License
 
 Licensed under either of
 
-- Apache License, Version 2.0, (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license (LICENSE-MIT or http://opensource.org/licenses/MIT)
+-   Apache License, Version 2.0, (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
+-   MIT license (LICENSE-MIT or http://opensource.org/licenses/MIT)
 
 at your option.
 

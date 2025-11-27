@@ -1,7 +1,7 @@
 #[cfg(feature = "no_std")]
 use alloc::alloc::{Layout, alloc, dealloc};
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
-use core::{array, ops::Deref, ptr, slice};
+use core::{ops::Deref, ptr, slice};
 #[cfg(not(feature = "no_std"))]
 use std::{
     alloc::{Layout, alloc, dealloc},
@@ -176,13 +176,15 @@ static FIR_CACHE: LazyLock<Mutex<HashMap<FirCacheKey, FirCacheData>>> =
 /// configured at construction time using the [`Latency`] enum to balance quality versus delay.
 ///
 /// The stopband attenuation can also be configured via the [`Attenuation`] enum.
-pub struct ResamplerFir<const CHANNEL: usize> {
+pub struct ResamplerFir {
+    /// Number of audio channels.
+    channels: usize,
     /// Polyphase coefficient table stored contiguously: all phases × taps in a single allocation.
     /// Layout: [phase0_tap0..N, phase1_tap0..N, ..., phase1023_tap0..N]
     coeffs: Arc<AlignedMemory>,
     /// Per-channel double-sized input buffers for efficient buffer management.
     /// Size = BUFFER_SIZE (2x INPUT_CAPACITY) to minimize copy operations.
-    input_buffers: [Box<[f32]>; CHANNEL],
+    input_buffers: Box<[f32]>,
     /// Read position in the input buffer (where we start reading from).
     read_position: usize,
     /// Number of valid frames available for processing (from read_position).
@@ -198,7 +200,7 @@ pub struct ResamplerFir<const CHANNEL: usize> {
     convolve_function: ConvolveFn,
 }
 
-impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
+impl ResamplerFir {
     /// Create a new [`ResamplerFir`].
     ///
     /// Parameters:
@@ -219,7 +221,8 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
     /// use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
     ///
     /// // Create with default latency (128 taps, 64 samples delay) and 90 dB attenuation
-    /// let resampler = ResamplerFir::<2>::new(
+    /// let resampler = ResamplerFir::new(
+    ///     2,
     ///     SampleRate::Hz48000,
     ///     SampleRate::Hz44100,
     ///     Latency::default(),
@@ -227,7 +230,8 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
     /// );
     ///
     /// // Create with low latency (32 taps, 16 samples delay) and 60 dB attenuation
-    /// let resampler_low_latency = ResamplerFir::<2>::new(
+    /// let resampler_low_latency = ResamplerFir::new(
+    ///     2,
     ///     SampleRate::Hz48000,
     ///     SampleRate::Hz44100,
     ///     Latency::Sample16,
@@ -235,6 +239,7 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
     /// );
     /// ```
     pub fn new(
+        channels: usize,
         input_rate: SampleRate,
         output_rate: SampleRate,
         latency: Latency,
@@ -258,8 +263,7 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         let coeffs = Self::get_or_create_fir_coeffs(cutoff as f32, taps, attenuation);
 
         // Allocate double-sized buffers for efficient buffer management.
-        let input_buffers: [Box<[f32]>; CHANNEL] =
-            array::from_fn(|_| vec![0.0; BUFFER_SIZE].into_boxed_slice());
+        let input_buffers = vec![0.0; BUFFER_SIZE * channels].into_boxed_slice();
 
         #[cfg(all(target_arch = "x86_64", not(feature = "no_std")))]
         let convolve_function = if std::arch::is_x86_feature_detected!("avx512f") && taps >= 16 {
@@ -320,6 +324,7 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         };
 
         ResamplerFir {
+            channels,
             coeffs,
             input_buffers,
             read_position: 0,
@@ -393,7 +398,7 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         let max_output_frames = (max_usable_frames / self.ratio).ceil() as usize + 2;
         #[cfg(feature = "no_std")]
         let max_output_frames = libm::ceil(max_usable_frames / self.ratio) as usize + 2;
-        max_output_frames * CHANNEL
+        max_output_frames * self.channels
     }
 
     /// Process audio samples, resampling from input to output sample rate.
@@ -420,7 +425,8 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
     /// ```rust
     /// use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
     ///
-    /// let mut resampler = ResamplerFir::<1>::new(
+    /// let mut resampler = ResamplerFir::new(
+    ///     1,
     ///     SampleRate::Hz48000,
     ///     SampleRate::Hz44100,
     ///     Latency::default(),
@@ -442,15 +448,15 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         input: &[f32],
         output: &mut [f32],
     ) -> Result<(usize, usize), ResampleError> {
-        if !input.len().is_multiple_of(CHANNEL) {
+        if !input.len().is_multiple_of(self.channels) {
             return Err(ResampleError::InvalidInputBufferSize);
         }
-        if !output.len().is_multiple_of(CHANNEL) {
+        if !output.len().is_multiple_of(self.channels) {
             return Err(ResampleError::InvalidOutputBufferSize);
         }
 
-        let input_frames = input.len() / CHANNEL;
-        let output_capacity = output.len() / CHANNEL;
+        let input_frames = input.len() / self.channels;
+        let output_capacity = output.len() / self.channels;
 
         let write_position = self.read_position + self.available_frames;
         let remaining_capacity = BUFFER_SIZE.saturating_sub(write_position);
@@ -460,9 +466,10 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
 
         // Deinterleave and copy input frames into double-sized buffers.
         for frame_idx in 0..frames_to_copy {
-            for channel in 0..CHANNEL {
-                self.input_buffers[channel][write_position + frame_idx] =
-                    input[frame_idx * CHANNEL + channel];
+            for channel in 0..self.channels {
+                let channel_buf = &mut self.input_buffers[BUFFER_SIZE * channel..];
+                channel_buf[write_position + frame_idx] =
+                    input[frame_idx * self.channels + channel];
             }
         }
         self.available_frames += frames_to_copy;
@@ -494,10 +501,11 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
             let phase2 = (phase1 + 1).min(self.phases - 1);
             let frac = (phase_f - phase1 as f64) as f32;
 
-            for channel in 0..CHANNEL {
+            for channel in 0..self.channels {
                 // Perform N-tap convolution with linear interpolation between phases.
                 let actual_pos = self.read_position + input_offset;
-                let input_slice = &self.input_buffers[channel][actual_pos..actual_pos + self.taps];
+                let channel_buf = &self.input_buffers[BUFFER_SIZE * channel..];
+                let input_slice = &channel_buf[actual_pos..actual_pos + self.taps];
 
                 let phase1_start = phase1 * self.taps;
                 let coeffs_phase1 = &self.coeffs[phase1_start..phase1_start + self.taps];
@@ -511,7 +519,7 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
                     frac,
                     self.taps,
                 );
-                output[output_frame_count * CHANNEL + channel] = sample;
+                output[output_frame_count * self.channels + channel] = sample;
             }
 
             output_frame_count += 1;
@@ -531,8 +539,9 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
         // Double-buffer optimization: only copy when read_position exceeds threshold.
         if self.read_position > INPUT_CAPACITY {
             // Copy remaining valid data to the beginning of the buffer.
-            for channel in 0..CHANNEL {
-                self.input_buffers[channel].copy_within(
+            for channel in 0..self.channels {
+                let channel_buf = &mut self.input_buffers[BUFFER_SIZE * channel..];
+                channel_buf.copy_within(
                     self.read_position..self.read_position + self.available_frames,
                     0,
                 );
@@ -540,7 +549,10 @@ impl<const CHANNEL: usize> ResamplerFir<CHANNEL> {
             self.read_position = 0;
         }
 
-        Ok((frames_to_copy * CHANNEL, output_frame_count * CHANNEL))
+        Ok((
+            frames_to_copy * self.channels,
+            output_frame_count * self.channels,
+        ))
     }
 
     /// Returns the algorithmic delay (latency) of the resampler in input samples.
@@ -626,7 +638,8 @@ mod tests {
         let mut input = vec![0.0f32; input_samples];
         input[impulse_pos] = 1.0;
 
-        let mut resampler = ResamplerFir::<1>::new(
+        let mut resampler = ResamplerFir::new(
+            1,
             input_rate,
             output_rate,
             Latency::Sample64,
