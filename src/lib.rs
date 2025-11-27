@@ -11,7 +11,7 @@
 //! use resampler::{ResamplerFft, SampleRate};
 //!
 //! // Create a stereo resampler (2 channels) from 44.1 kHz to 48 kHz.
-//! let mut resampler = ResamplerFft::<2>::new(SampleRate::Hz44100, SampleRate::Hz48000);
+//! let mut resampler = ResamplerFft::new(2, SampleRate::Hz44100, SampleRate::Hz48000);
 //!
 //! // Get required buffer sizes (already includes all channels).
 //! let input_size = resampler.chunk_size_input();
@@ -30,7 +30,8 @@
 //! use resampler::{Attenuation, Latency, ResamplerFir, SampleRate};
 //!
 //! // Create a stereo resampler with configurable latency (16, 32, or 64 samples).
-//! let mut resampler = ResamplerFir::<2>::new(
+//! let mut resampler = ResamplerFir::new(
+//!     2,
 //!     SampleRate::Hz48000,
 //!     SampleRate::Hz44100,
 //!     Latency::Sample64,

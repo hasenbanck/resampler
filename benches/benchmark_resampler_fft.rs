@@ -50,7 +50,7 @@ fn bench_resampler(c: &mut Criterion) {
         const CHANNELS: usize = 2;
 
         let temp_resampler =
-            ResamplerFft::<CHANNELS>::new(bench_config.input_rate, bench_config.output_rate);
+            ResamplerFft::new(CHANNELS, bench_config.input_rate, bench_config.output_rate);
 
         let chunk_size_output = temp_resampler.chunk_size_output();
 
@@ -61,10 +61,8 @@ fn bench_resampler(c: &mut Criterion) {
             BenchmarkId::new("process", bench_config.description),
             bench_config,
             |b, bench_config| {
-                let mut resampler = ResamplerFft::<CHANNELS>::new(
-                    bench_config.input_rate,
-                    bench_config.output_rate,
-                );
+                let mut resampler =
+                    ResamplerFft::new(CHANNELS, bench_config.input_rate, bench_config.output_rate);
 
                 let chunk_size_input = resampler.chunk_size_input();
                 let chunk_size_output = resampler.chunk_size_output();

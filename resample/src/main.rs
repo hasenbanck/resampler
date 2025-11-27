@@ -161,8 +161,7 @@ fn main() {
     let start = Instant::now();
     let resampled_samples = match cli.filter {
         FilterType::Fir => {
-            let mut resampler =
-                ResamplerFir::<2>::new(input_rate, output_rate, latency, attenuation);
+            let mut resampler = ResamplerFir::new(2, input_rate, output_rate, latency, attenuation);
             resample_batch_fir(&mut resampler, &stereo_samples)
         }
         FilterType::Linear => resample_batch_interpolation(
@@ -178,7 +177,7 @@ fn main() {
             &stereo_samples,
         ),
         FilterType::Fft => {
-            let mut resampler = ResamplerFft::<2>::new(input_rate, output_rate);
+            let mut resampler = ResamplerFft::new(2, input_rate, output_rate);
             resample_batch(&mut resampler, &stereo_samples)
         }
     };
@@ -224,7 +223,7 @@ fn resample_batch_interpolation(
     resampler.resample(input_samples)
 }
 
-fn resample_batch_fir(resampler: &mut ResamplerFir<2>, input_samples: &[f32]) -> Vec<f32> {
+fn resample_batch_fir(resampler: &mut ResamplerFir, input_samples: &[f32]) -> Vec<f32> {
     const CHUNK_SIZE: usize = 512;
 
     let mut output_samples = Vec::new();
@@ -254,7 +253,7 @@ fn resample_batch_fir(resampler: &mut ResamplerFir<2>, input_samples: &[f32]) ->
     output_samples
 }
 
-fn resample_batch(resampler: &mut ResamplerFft<2>, input_samples: &[f32]) -> Vec<f32> {
+fn resample_batch(resampler: &mut ResamplerFft, input_samples: &[f32]) -> Vec<f32> {
     let chunk_size_input = resampler.chunk_size_input();
     let chunk_size_output = resampler.chunk_size_output();
 
