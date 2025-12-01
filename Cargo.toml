@@ -18,7 +18,7 @@ no_std = ["libm"]
 libm = { version = "0.2", optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.7", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "benchmark_resampler_fft"
