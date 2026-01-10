@@ -1,4 +1,5 @@
 use alloc::{sync::Arc, vec, vec::Vec};
+use core::fmt;
 #[cfg(not(feature = "no_std"))]
 use std::{
     collections::HashMap,
@@ -50,6 +51,18 @@ pub struct ResamplerFft {
     overlaps: Vec<f32>,
     input_scratch: Vec<f32>,
     output_scratch: Vec<f32>,
+}
+
+impl fmt::Debug for ResamplerFft {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResamplerFft")
+            .field("channels", &self.channels)
+            .field("chunk_size_input", &self.chunk_size_input)
+            .field("chunk_size_output", &self.chunk_size_output)
+            .field("fft_size_input", &self.fft_size_input)
+            .field("fft_size_output", &self.fft_size_output)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ResamplerFft {

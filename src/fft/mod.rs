@@ -1,6 +1,6 @@
 pub(crate) mod butterflies;
 pub(crate) mod optimizer;
-pub mod planner;
+pub(crate) mod planner;
 mod radix_fft;
 mod real_complex;
 pub(crate) mod stockham_autosort;
