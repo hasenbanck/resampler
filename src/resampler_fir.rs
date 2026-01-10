@@ -22,6 +22,7 @@ type ConvolveFn =
     fn(input: &[f32], coeffs1: &[f32], coeffs2: &[f32], frac: f32, taps: usize) -> f32;
 
 /// A 64-byte aligned memory of f32 values.
+#[derive(Debug)]
 pub(crate) struct AlignedMemory {
     ptr: *mut f32,
     len: usize,
@@ -176,6 +177,7 @@ static FIR_CACHE: LazyLock<Mutex<HashMap<FirCacheKey, FirCacheData>>> =
 /// configured at construction time using the [`Latency`] enum to balance quality versus delay.
 ///
 /// The stopband attenuation can also be configured via the [`Attenuation`] enum.
+#[derive(Debug)]
 pub struct ResamplerFir {
     /// Number of audio channels.
     channels: usize,

@@ -147,6 +147,7 @@
 //! at your option.
 #![cfg_attr(feature = "no_std", no_std)]
 #![forbid(missing_docs)]
+#![deny(missing_debug_implementations)]
 
 extern crate alloc;
 

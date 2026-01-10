@@ -39,6 +39,7 @@ static FFT_CACHE: LazyLock<Mutex<HashMap<u64, FftCacheData>>> =
 /// `ResamplerFft` uses the overlap-add FFT method with Kaiser windowing to convert audio
 /// between different sample rates. The field channels specifies the
 /// number of audio channels (e.g., 1 for mono, 2 for stereo).
+#[derive(Debug)]
 pub struct ResamplerFft {
     channels: usize,
     fft_resampler: FftResampler,
@@ -231,6 +232,7 @@ impl ResamplerFft {
 ///
 /// The overlap-add resampling approach is based on the Rubato crate:
 /// https://github.com/HEnquist/rubato
+#[derive(Debug)]
 struct FftResampler {
     fft_size_input: usize,
     fft_size_output: usize,
