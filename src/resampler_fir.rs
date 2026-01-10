@@ -1,7 +1,7 @@
 #[cfg(feature = "no_std")]
 use alloc::alloc::{Layout, alloc, dealloc};
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
-use core::{ops::Deref, ptr, slice};
+use core::{fmt, ops::Deref, ptr, slice};
 #[cfg(not(feature = "no_std"))]
 use std::{
     alloc::{Layout, alloc, dealloc},
@@ -198,6 +198,16 @@ pub struct ResamplerFir {
     /// Number of polyphase branches.
     phases: usize,
     convolve_function: ConvolveFn,
+}
+
+impl fmt::Debug for ResamplerFir {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResamplerFir")
+            .field("channels", &self.channels)
+            .field("taps", &self.taps)
+            .field("phases", &self.phases)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ResamplerFir {
