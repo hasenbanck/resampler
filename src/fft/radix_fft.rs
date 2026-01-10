@@ -43,9 +43,11 @@ impl Radix {
 }
 
 /// Marker type for forward FFT direction.
+#[derive(Debug)]
 pub(crate) struct Forward;
 
 /// Marker type for inverse FFT direction.
+#[derive(Debug)]
 pub(crate) struct Inverse;
 
 type PostprocessFn = fn(&mut [Complex32], &mut [Complex32], &[Complex32]);
@@ -69,6 +71,7 @@ type StockhamAutosortFn =
 ///
 /// Multiple normalization steps can be merged: when doing forward+inverse FFTs,
 /// normalize once by dividing by `len()` instead of normalizing each transform separately.
+#[derive(Debug)]
 pub(crate) struct RadixFFT<D> {
     n: usize,
     n2: usize,
