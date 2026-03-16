@@ -256,8 +256,60 @@ impl ResamplerFir {
         latency: Latency,
         attenuation: Attenuation,
     ) -> Self {
-        let input_rate_hz = u32::from(input_rate) as f64;
-        let output_rate_hz = u32::from(output_rate) as f64;
+        Self::new_from_hz(
+            channels,
+            u32::from(input_rate),
+            u32::from(output_rate),
+            latency,
+            attenuation,
+        )
+    }
+
+    /// Create a new [`ResamplerFir`] from arbitrary integer sample rates.
+    ///
+    /// This is equivalent to [`ResamplerFir::new`] but accepts raw `u32` sample rates
+    /// instead of the [`SampleRate`] enum, allowing resampling between any pair of
+    /// sample rates.
+    ///
+    /// # Parameters
+    ///
+    /// - `channels`: The channel count.
+    /// - `input_rate_hz`: Input sample rate in Hz.
+    /// - `output_rate_hz`: Output sample rate in Hz.
+    /// - `latency`: Latency configuration determining filter length.
+    /// - `attenuation`: Desired stopband attenuation controlling filter quality.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `input_rate_hz` or `output_rate_hz` is zero.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use resampler::{Attenuation, Latency, ResamplerFir};
+    ///
+    /// // Resample from 24 kHz to 16 kHz (rates not available in SampleRate enum)
+    /// let resampler =
+    ///     ResamplerFir::new_from_hz(2, 24000, 16000, Latency::default(), Attenuation::default());
+    /// ```
+    pub fn new_from_hz(
+        channels: usize,
+        input_rate_hz: u32,
+        output_rate_hz: u32,
+        latency: Latency,
+        attenuation: Attenuation,
+    ) -> Self {
+        assert!(
+            input_rate_hz > 0,
+            "input sample rate must be greater than zero"
+        );
+        assert!(
+            output_rate_hz > 0,
+            "output sample rate must be greater than zero"
+        );
+
+        let input_rate_hz = input_rate_hz as f64;
+        let output_rate_hz = output_rate_hz as f64;
         let ratio = input_rate_hz / output_rate_hz;
 
         let taps = latency.taps();
@@ -758,5 +810,52 @@ mod tests {
         #[cfg(not(feature = "no_std"))]
         println!("=== 22050 Hz -> 48000 Hz ===");
         measure_stopband_attenuation(SampleRate::Hz22050, SampleRate::Hz48000);
+    }
+
+    #[test]
+    fn test_new_from_hz_matches_new() {
+        let mut resampler_enum = ResamplerFir::new(
+            1,
+            SampleRate::Hz48000,
+            SampleRate::Hz44100,
+            Latency::Sample64,
+            Attenuation::Db90,
+        );
+        let mut resampler_hz =
+            ResamplerFir::new_from_hz(1, 48000, 44100, Latency::Sample64, Attenuation::Db90);
+
+        let input = vec![0.5f32; 512];
+        let mut output_enum = vec![0.0f32; resampler_enum.buffer_size_output()];
+        let mut output_hz = vec![0.0f32; resampler_hz.buffer_size_output()];
+
+        let (c1, p1) = resampler_enum.resample(&input, &mut output_enum).unwrap();
+        let (c2, p2) = resampler_hz.resample(&input, &mut output_hz).unwrap();
+
+        assert_eq!(c1, c2);
+        assert_eq!(p1, p2);
+        assert_eq!(&output_enum[..p1], &output_hz[..p2]);
+    }
+
+    #[test]
+    fn test_new_from_hz_arbitrary_rates() {
+        let mut resampler =
+            ResamplerFir::new_from_hz(1, 24000, 16000, Latency::Sample32, Attenuation::Db60);
+
+        let input = vec![0.0f32; 256];
+        let mut output = vec![0.0f32; resampler.buffer_size_output()];
+        let result = resampler.resample(&input, &mut output);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "input sample rate must be greater than zero")]
+    fn test_new_from_hz_zero_input_rate() {
+        ResamplerFir::new_from_hz(1, 0, 44100, Latency::default(), Attenuation::default());
+    }
+
+    #[test]
+    #[should_panic(expected = "output sample rate must be greater than zero")]
+    fn test_new_from_hz_zero_output_rate() {
+        ResamplerFir::new_from_hz(1, 44100, 0, Latency::default(), Attenuation::default());
     }
 }
