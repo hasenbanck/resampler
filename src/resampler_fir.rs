@@ -590,10 +590,12 @@ impl ResamplerFir {
         }
 
         // Update buffer state: consume processed frames.
+        // Cap to available_frames: when ratio > taps, position can advance past the buffer end
+        // after the last valid output iteration. The excess is preserved as a lookahead offset.
         #[cfg(not(feature = "no_std"))]
-        let consumed_frames = self.position.floor() as usize;
+        let consumed_frames = (self.position.floor() as usize).min(self.available_frames);
         #[cfg(feature = "no_std")]
-        let consumed_frames = libm::floor(self.position) as usize;
+        let consumed_frames = (libm::floor(self.position) as usize).min(self.available_frames);
 
         self.read_position += consumed_frames;
         self.available_frames -= consumed_frames;
