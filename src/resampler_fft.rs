@@ -10,7 +10,7 @@ use crate::{
     Complex32, Forward, Inverse, Radix, RadixFFT, SampleRate,
     error::ResampleError,
     fft::planner::ConversionConfig,
-    window::{WindowType, calculate_cutoff_kaiser, make_sincs_for_kaiser},
+    window::{calculate_cutoff_kaiser, make_sincs_for_kaiser},
 };
 
 const KAISER_BETA: f64 = 10.0;
@@ -353,18 +353,12 @@ impl FftResampler {
         let cutoff = match fft_size_input > fft_size_output {
             true => {
                 let scale = fft_size_output as f64 / fft_size_input as f64;
-                calculate_cutoff_kaiser(fft_size_output, KAISER_BETA) * scale
+                calculate_cutoff_kaiser(fft_size_output as f64, KAISER_BETA) * scale
             }
-            false => calculate_cutoff_kaiser(fft_size_input, KAISER_BETA),
+            false => calculate_cutoff_kaiser(fft_size_input as f64, KAISER_BETA),
         };
 
-        let sincs = make_sincs_for_kaiser(
-            fft_size_input,
-            1,
-            cutoff as f32,
-            KAISER_BETA,
-            WindowType::Periodic,
-        );
+        let sincs = make_sincs_for_kaiser(fft_size_input, 1, cutoff as f32, KAISER_BETA);
         let mut filter_time = vec![0.0; 2 * fft_size_input];
         let mut filter_spectrum = vec![Complex32::zero(); fft_size_input + 1];
 
