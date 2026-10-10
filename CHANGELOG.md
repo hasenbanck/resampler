@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-10-10
+
+### Fixed
+
+- Fix a timing error floor of about -74 dB in `ResamplerFir`. The interpolation between the last
+  phase and the next sample clamped instead of wrapping.
+- Fix aliasing near the output Nyquist frequency when `ResamplerFir` downsamples. The filter now
+  spans the `Latency` in output samples and its transition band ends below the output Nyquist
+  frequency.
+- Compute the `ResamplerFir` coefficients in double precision and normalize each phase, which
+  lowers the stopband floor at `Attenuation::Db120`.
+
 ## [0.5.1] - 2026-03-18
 
 ### Fixed
